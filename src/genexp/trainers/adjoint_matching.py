@@ -1,0 +1,418 @@
+import numpy as np
+import copy
+from tqdm import tqdm
+from omegaconf import OmegaConf
+
+import torch
+from torch.utils.data import Dataset, ConcatDataset
+
+from maxentdiff.sampling import EulerMaruyamaSampler, Sampler
+
+
+# TODO change all traj_graph
+class LeanAdjointSolverFlow:
+    """Solver as per adjoint matching paper."""
+
+    def __init__(self, gen_model: FlowModel, grad_reward_fn: callable, grad_f_k_fn: callable, device=None):
+        self.model = gen_model
+        self.interpolant_scheduler = gen_model.interpolant_scheduler
+        self.grad_reward_fn = grad_reward_fn
+        self.grad_f_k_fn = grad_f_k_fn
+        self.device = device or torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+
+    def step(self, adj, g_t, t, alpha, alpha_dot, dt, upper_edge_mask):
+        adj_t = adj.detach() # detach to avoid gradients
+
+        with torch.enable_grad(): # TODO change to general
+            # turn on autograd for the graph
+            g_t.ndata["x_t"] = g_t.ndata["x_t"].detach().requires_grad_(True)
+            node_batch_idx = torch.zeros(g_t.num_nodes(), dtype=torch.long)
+
+            # predict the destination of the trajectory given the current time-point
+            dst_dict = self.model.vector_field(
+                g_t, 
+                t=torch.full((g_t.batch_size,), t, device=g_t.device),
+                node_batch_idx=node_batch_idx,
+                upper_edge_mask=upper_edge_mask,
+                apply_softmax=True,
+                remove_com=True
+            )
+            # take integration step for positions
+            x_1 = dst_dict['x']
+            x_t = g_t.ndata['x_t']
+
+            v_pred = self.model.vector_field.vector_field(x_t, x_1, alpha[0], alpha_dot[0])
+
+            eps_pred = 2 * v_pred - alpha_dot[0]/(alpha[0]+dt) * x_t
+
+            g_term = (adj_t * eps_pred).sum()
+            v = torch.autograd.grad(g_term, x_t, retain_graph=False)[0]
+
+        assert v.shape == x_t.shape
+
+        adj_tmh = adj_t + dt * v
+        if self.grad_f_k_fn is not None:
+            grad_list = self.grad_f_k_fn(g_t, t + dt) # returns list
+            grad_f_k = torch.cat(grad_list, dim=0).to(adj.device) # concat
+
+            assert grad_f_k.shape == x_t.shape
+            adj_tmh = adj_t + dt * v - dt * grad_f_k
+            
+        return adj_tmh.detach(), v_pred.detach()
+
+    def solve(self, trajectories, ts):
+        """Solving loop."""
+        T = ts.shape[0]
+        assert T == len(trajectories)
+        # ts: tensor of shape (num_ts,) (0, dt, 2dt, ..., 1-dt, 1)
+        dt = ts[1] - ts[0]
+        ts = ts.flip(0) # flip to go from 1 to 0
+
+        alpha_s = self.interpolant_scheduler.alpha_t(ts)
+        alpha_dot_s = self.interpolant_scheduler.alpha_t_prime(ts)
+
+        trajectories = trajectories[::-1] # flip to go from 1 to 0      
+        g1 = trajectories[0]
+        minus_adj = self.grad_reward_fn(g1) # returns a list of tensors (representing the adjoint)
+        adj = - torch.cat(minus_adj, dim=0) # flip the sign of the adjoint and concatenate 
+
+        row_mask = ~torch.isnan(adj).all(dim=1)
+
+        trajs_adj = []
+        traj_v_pred = []
+        upper_edge_mask = g1.edata['ue_mask'] # (edges, 1)
+
+        for i in range(1, T):
+            t = ts[i]
+            g_t = trajectories[i]
+            alpha = alpha_s[i]
+            alpha_dot = alpha_dot_s[i]
+            adj, v_pred = self.step(adj=adj, g_t=g_t, t=t, alpha=alpha, alpha_dot=alpha_dot, dt=dt, upper_edge_mask=upper_edge_mask) # TODO change to general
+            trajs_adj.append(adj.detach())
+            traj_v_pred.append(v_pred.detach())
+
+            tmp_row_mask = ~torch.isnan(adj).all(dim=1)
+            row_mask = torch.logical_and(row_mask, tmp_row_mask)
+        
+        res = {
+                't': ts[1:], # (T,)
+                'alpha': alpha_s[1:, 0], # (T,)
+                'alpha_dot': alpha_dot_s[1:, 0], # (T,)
+                'traj_x': trajectories[1:], # list of dgl graphs (T, )
+                'traj_adj': torch.stack(trajs_adj), # (T, nodes, 3)
+                'traj_v_pred': torch.stack(traj_v_pred), # (T, nodes, 3)
+                'row_mask': row_mask, # (nodes,)
+            }
+
+        assert res['traj_adj'].shape == res['traj_v_pred'].shape
+        assert res['traj_adj'].shape[0] == res['t'].shape[0]
+        assert len(res['traj_graph']) == res['t'].shape[0] # TODO change
+        assert res['alpha'].shape[0] == res['t'].shape[0] and res['alpha_dot'].shape[0] == res['t'].shape[0]
+        assert res['t'].shape[0] == ts.shape[0] - 1
+        return res
+
+
+class AMDataset(Dataset):
+    def __init__(self, solver_info):
+        solver_info = self.detach_all(solver_info)
+        self.t = solver_info['t'] # (T,)
+        self.sigma_t = solver_info['sigma_t'] # (T,)
+        self.alpha = solver_info['alpha'] # (T,)
+        self.alpha_dot = solver_info['alpha_dot']# (T,)
+        self.traj_g = solver_info['traj_x'] # trajectories (T, batch_shape)
+        self.traj_adj = solver_info['traj_adj'] # (T, adjoint_shape)
+        self.traj_v_base = solver_info['traj_v_pred'] # (T, adjoint_shape)
+        self.row_mask = solver_info['row_mask'] # (nodes,)
+
+        self.T = self.t.size(0) # T = number of time steps
+        self.bs = 1 # len(self.traj_g[0].batch_num_nodes())
+        
+    def __len__(self):
+        return self.bs
+
+    def __getitem__(self, idx):
+        return {
+            't': self.t,
+            'sigma_t': self.sigma_t,
+            'alpha': self.alpha,
+            'alpha_dot': self.alpha_dot,
+            'traj_graph': self.traj_g,
+            'traj_adj': self.traj_adj,
+            'traj_v_base': self.traj_v_base,
+            'row_mask': self.row_mask,
+        }
+    
+    def detach_all(self, solver_info):
+        for key, value in solver_info.items():
+            if isinstance(value, torch.Tensor):
+                solver_info[key] = value.detach()
+            elif isinstance(value, list):
+                for g in value:
+                    for k in g.ndata.keys():
+                        if isinstance(g.ndata[k], torch.Tensor):
+                            g.ndata[k] = g.ndata[k].detach()
+                    for k in g.edata.keys():
+                        if isinstance(g.edata[k], torch.Tensor):
+                            g.edata[k] = g.edata[k].detach()
+        return solver_info
+
+
+def create_timestep_subset(total_steps, final_percent=0.25, sample_percent=0.25):
+    """
+    Create a subset of time-steps for efficient computation. (See paper Appendix G2)
+    """
+    # Calculate the number of steps for each section
+    final_steps_count = int(total_steps * final_percent)
+    sample_steps_count = int(total_steps * sample_percent)
+    
+    # Always take the first final_percent steps (assuming highest index is 0)
+    final_samples = np.arange(final_steps_count)
+    
+    # Sample additional steps without replacement from the remaining steps
+    # Exclude the steps already in final_samples
+    remaining_steps = np.setdiff1d(
+        np.arange(total_steps), 
+        final_samples
+    )
+    
+    # Sample additional steps
+    additional_samples = np.random.choice(
+        remaining_steps, 
+        size=sample_steps_count, 
+        replace=False
+    )
+    
+    # Combine and sort the samples
+    combined_samples = np.sort(np.concatenate([final_samples, additional_samples]))
+    
+    return combined_samples
+
+
+def adj_matching_loss(v_base, v_fine, adj, sigma):
+    """Adjoint matching loss for FM"""
+    diff = v_fine - v_base
+    term_diff = (2 / sigma[:,None,None]) * diff
+    term_adj = sigma[:,None,None] * adj
+    term_difference = term_diff - term_adj
+    term_difference = torch.sum(torch.square(term_difference), dim=[1, 2])
+    loss = torch.mean(term_difference)
+    return loss 
+
+
+class AMTrainerFlow:
+    def __init__(self,
+            config: OmegaConf,
+            model: FlowModel,
+            base_model: FlowModel,
+            grad_reward_fn: callable,
+            grad_f_k_fn: callable = None,
+            device: torch.device = None,
+            verbose: bool = False,
+            sampler: Sampler = None
+        ):
+        # Config
+        self.config = config
+        self.sampling_config = config.sampling
+        self.device = device or torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.verbose = verbose
+        self.max_nodes = config.get("max_nodes", 210)
+
+        # Clip
+        self.clip_grad_norm = config.get("clip_grad_norm", 1e5)
+        self.clip_loss = config.get("clip_loss", 0.5)
+
+        # Models
+        self.fine_model = model
+        self.base_model = base_model
+        self.fine_model.to(self.device)
+        self.base_model.to(self.device)
+
+        # Reward (Gradient of the reward function(al))
+        self.grad_reward_fn = grad_reward_fn
+        self.grad_f_k_fn = grad_f_k_fn
+
+        # Setup optimizer
+        self.configure_optimizers()
+
+        if sampler is None:
+            if 'data_shape' not in self.sampling_config:
+                raise ValueError('Either pass an explicit sampler or pass a data_shape in the sampling config (config.sampling)')
+            self.sampler = EulerMaruyamaSampler(model, self.sampling_config.data_shape)
+        else:
+            self.sampler = sampler
+
+
+    def configure_optimizers(self):
+        if hasattr(self, 'optimizer'):
+            del self.optimizer
+        self.optimizer = torch.optim.Adam(self.fine_model.parameters(), lr=self.config.lr)
+
+
+    def get_model(self):
+        return self.fine_model
+
+
+    def sample_trajectories(self):
+        N = self.sampling_config.num_samples 
+        trajectories = self.sampler.sample_trajectories(self.config.)
+
+
+    def generate_dataset(self):
+        """Sample dataset for training based on adjoint ODE and sampled trajectories."""
+        datasets = []
+
+        # run in eval mode
+        self.fine_model.eval()
+        self.base_model.eval()
+
+        solver = LeanAdjointSolverFlow(self.base_model, self.grad_reward_fn, self.grad_f_k_fn)
+
+        iterations = self.sampling_config.num_samples // self.config.batch_size
+        for i in range(iterations):
+            with torch.no_grad():
+                while True:
+                    trajectories, ts, sigmas = self.sample_trajectories()
+                    if trajectories[0].num_nodes() <= self.max_nodes:
+                        break  
+                    print(f"Rerolling: got {trajectories[0].num_nodes()} nodes (> {self.max_nodes})")
+
+            # graph_trajectories is a list of the intermediate graphs
+            solver_info = solver.solve(graph_trajectories=trajectories, ts=ts)
+            # add sigma_t to solver_info
+            solver_info['sigma_t'] = sigmas
+            
+            if (~solver_info['row_mask']).all():
+                print("Row mask is all True, skipping sample")
+                continue
+            dataset = AMDataset(solver_info=solver_info)
+            datasets.append(dataset)
+
+        if len(datasets) == 0:
+            return None
+        dataset = ConcatDataset(datasets)
+        return dataset
+
+
+    def train_step(self, sample):
+        """Training step."""
+
+        ts = sample['t'].to(self.device)
+        sigmas = sample['sigma_t'].to(self.device)
+        alpha = sample['alpha'].to(self.device)
+        alpha_dot = sample['alpha_dot'].to(self.device)
+        traj_g = [g.to(self.device) for g in sample['traj_graph']]
+        traj_adj = sample['traj_adj'].to(self.device)
+        traj_v_base = sample['traj_v_base'].to(self.device)
+        row_mask = sample['row_mask'].to(self.device)
+
+        # Get index for time steps to calculate adjoint matching loss
+        idxs = create_timestep_subset(ts.shape[0])
+
+        v_base = []
+        v_fine = []
+        adj = []
+        sigma = []
+        
+        for idx in idxs:
+            t = ts[idx]
+            sigma_t = sigmas[idx]
+            adj_t = traj_adj[idx]
+            v_base_t = traj_v_base[idx]
+            g_base_t = traj_g[idx]
+            alpha_t = alpha[idx]
+            alpha_dot_t = alpha_dot[idx]
+
+            node_batch_idx = torch.zeros(g_base_t.num_nodes(), dtype=torch.long)
+
+            # predict the destination of the trajectory given the current time-point
+            dst_dict = self.fine_model.vector_field(
+                g_base_t, 
+                t=torch.full((g_base_t.batch_size,), t, device=g_base_t.device),
+                node_batch_idx=node_batch_idx,
+                upper_edge_mask=g_base_t.edata['ue_mask'],
+                apply_softmax=True,
+                remove_com=True
+            )
+            # take integration step for positions
+            x_1 = dst_dict['x']
+            x_t = g_base_t.ndata['x_t']
+
+            v_fine_t = self.fine_model.vector_field.vector_field(x_t, x_1, alpha_t, alpha_dot_t)
+            
+            v_base_t = v_base_t[row_mask]
+            v_fine_t = v_fine_t[row_mask]
+            adj_t = adj_t[row_mask]
+            
+            v_base.append(v_base_t)
+            v_fine.append(v_fine_t)
+            adj.append(adj_t)
+            sigma.append(sigma_t)
+        
+        # stack the tensors
+        v_base = torch.stack(v_base, dim=0)
+        v_fine = torch.stack(v_fine, dim=0)
+        sigma = torch.stack(sigma, dim=0)
+        adj = torch.stack(adj, dim=0)
+        
+        loss = adj_matching_loss(
+            v_base=v_base,
+            v_fine=v_fine,
+            adj=adj,
+            sigma=sigma,
+        )
+
+        if loss.isnan().any():
+            return torch.tensor(float("inf"), device=self.device)
+        
+        # step optimizer
+        self.optimizer.zero_grad()
+
+        # self.fine_model.zero_grad()
+        loss.backward(retain_graph=False)
+
+        # loss clapping
+        if self.clip_loss > 0.0:
+            loss = torch.clamp(loss, min=0.0, max=self.clip_loss)
+
+        if self.verbose and self.config.clip_grad_norm > 0.0:
+            total_norm = 0
+            for p in self.fine_model.parameters():
+                param_norm = p.grad.detach().data.norm(2)
+                total_norm += param_norm.item() ** 2
+            total_norm = total_norm ** 0.5
+            print(f"Before Clipping Norm: {total_norm:.6f}")
+
+        if self.clip_grad_norm > 0.0:
+            torch.nn.utils.clip_grad_norm_(self.fine_model.parameters(), self.clip_grad_norm)
+
+        self.optimizer.step()
+
+        return loss
+
+
+    def finetune(self, dataset, steps=None, debug=False):
+        """Finetuning the model."""
+
+        c = 0
+        losses = []
+
+        self.fine_model.to(self.device)
+        self.fine_model.train()
+        
+        self.optimizer.zero_grad()
+
+        # iterate over the dataset
+        if steps is not None:
+            idxs = np.random.permutation(dataset.__len__())[:steps]
+        else:
+            idxs = np.random.permutation(dataset.__len__())
+        
+        for idx in idxs:
+            sample = dataset[idx]
+            loss = self.train_step(sample).item()
+            losses.append(loss)
+            c+=1 
+
+        del dataset
+        return losses if debug else sum(losses) / c
