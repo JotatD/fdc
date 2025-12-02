@@ -1,5 +1,5 @@
-from maxentdiff.models import FlowModel, InterpolantScheduler, AdjointState
-from maxentdiff.sampling import Sampler
+from genexp.models import FlowModel, InterpolantScheduler, AdjointState
+from genexp.sampling import Sampler
 from flowmol import FlowMol
 from flowmol.models.interpolant_scheduler import InterpolantScheduler as FlowMolInterpolantScheduler
 
@@ -9,17 +9,17 @@ class GraphInterpolantScheduler(InterpolantScheduler):
         super().__init__()
         self.scheduler = scheduler
     
-    def beta_t(self, t):
-        return self.scheduler.beta_t(t)
+    def beta_t(self, t): # TODO check dimensions etc, and for all other funcs
+        return self.scheduler.beta_t(t)[:, 0] # TODO if dim = 2 otw [0]
     
     def beta_t_prime(self, t):
-        return self.scheduler.beta_t_prime(t)
+        return self.scheduler.beta_t_prime(t)[:, 0]
     
     def alpha_t(self, t):
-        return self.scheduler.alpha_t(t)
+        return self.scheduler.alpha_t(t)[:, 0]
     
     def alpha_t_prime(self, t):
-        return self.scheduler.alpha_t_prime(t)
+        return self.scheduler.alpha_t_prime(t)[:, 0]
     
     def interpolants(self, t):
         return self.alpha_t(t), self.beta_t(t)
@@ -90,5 +90,7 @@ class GraphEulerMaruyamaSampler(Sampler):
                 device = self.model.device,
                 keep_intermediate_graphs = True,
             )
+
+        trajs = [GraphSample(g) for g in graph_trajectories]
 
         return graph_trajectories

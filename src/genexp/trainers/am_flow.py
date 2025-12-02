@@ -6,8 +6,8 @@ from omegaconf import OmegaConf
 import torch
 from torch.utils.data import Dataset, ConcatDataset
 
-from maxentdiff.models import FlowModel
-from maxentdiff.sampling import Sampler, EulerMaruyamaSampler
+from genexp.models import FlowModel
+from genexp.sampling import Sampler, EulerMaruyamaSampler
 
 
 class LeanAdjointSolverFlow:

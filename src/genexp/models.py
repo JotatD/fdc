@@ -24,88 +24,6 @@ def adapt(xt, t):
     return xt, t
 
 
-class AdjointState(object):
-    def __init__(self, point: torch.Tensor):
-        self.state = point
-
-    def __add__(self, other):
-        return AdjointState(self.state + other)
-    
-    def __div__(self, other):
-        return AdjointState(self.state / other)
-
-    def __mul__(self):
-        return AdjointState(self.state * other)
-
-    def __sub__(self):
-        return AdjointState(self.state - other)
-    
-    def __radd__(self, other):
-        return AdjointState(self.state + other)
-    
-    def __rdiv__(self, other):
-        return AdjointState(other / self.state)
-
-    def __rmul__(self):
-        return AdjointState(self.state * other)
-
-    def __rsub__(self):
-        return AdjointState(other - self.state)
-
-
-class GraphAdjoint(AdjointState):
-    def __init__(self, graph: dgl.DGLGraph):
-        super().__init__(graph.ndata['x_t'])
-
-    def __add__(self, other):
-        if isinstance(other, dgl.DGLGraph):
-            other = other.ndata['x_t']
-
-        return super().__add__(other)
-    
-    def __div__(self, other):
-        if isinstance(other, dgl.DGLGraph):
-            other = other.ndata['x_t']
-
-        return super().__div__(other)
-
-    def __mul__(self):
-        if isinstance(other, dgl.DGLGraph):
-            other = other.ndata['x_t']
-
-        return super().__mul__(other)
-
-    def __sub__(self):
-        if isinstance(other, dgl.DGLGraph):
-            other = other.ndata['x_t']
-
-        return super().__sub__(other)
-    
-    def __radd__(self, other):
-        if isinstance(other, dgl.DGLGraph):
-            other = other.ndata['x_t']
-
-        return super().__radd__(other)
-    
-    def __rdiv__(self, other):
-        if isinstance(other, dgl.DGLGraph):
-            other = other.ndata['x_t']
-
-        return super().__rdiv__(other)
-
-    def __rmul__(self):
-        if isinstance(other, dgl.DGLGraph):
-            other = other.ndata['x_t']
-
-        return super().__rmul__(other)
-
-    def __rsub__(self):
-        if isinstance(other, dgl.DGLGraph):
-            other = other.ndata['x_t']
-
-        return super().__rsub__(other)
-
-
 class InterpolantScheduler(torch.nn.Module):
     def __init__(self):
         super().__init__()
@@ -153,22 +71,18 @@ class FlowModel(torch.nn.Module):
         return self.model(torch.cat([x, t], dim=1))
 
     
-    def velocity_field(self, x: torch.Tensor | dgl.DGLGraph, t: torch.Tensor) -> AdjointState:
+    def velocity_field(self, x: torch.Tensor | dgl.DGLGraph, t: torch.Tensor) -> torch.Tensor:
         """Flow models predict the velocity field by default"""
-        return AdjointState(self(x, t))
+        return self(x, t)
 
 
-    def score_func(self, x: torch.Tensor | dgl.DGLGraph, t: torch.Tensor) -> AdjointState:
+    def score_func(self, x: torch.Tensor | dgl.DGLGraph, t: torch.Tensor) -> torch.Tensor:
         vf = velocity_field(x, t)
         at, adt = self.interpolant_scheduler.interpolants(t)
         bt, bdt = self.interpolant_scheduler.interpolants_prime(t)
         adoat = adt / at
         return (vf - adoat * x) / (bt * (adoat * bt - bdt))
-    
 
-    def adjoint(self, point):
-        return AdjointState(point)
-    
     
     @property
     def device(self):
@@ -269,7 +183,7 @@ class DiffusionModel(FlowModel):
         return self.sde
 
     
-    def velocity_field(self, x: torch.Tensor | dgl.DGLGraph, t: torch.Tensor) -> AdjointState:
+    def velocity_field(self, x: torch.Tensor | dgl.DGLGraph, t: torch.Tensor) -> torch.Tensor:
         s = self.score_func(x, t)
         at, bt = self.interpolant_scheduler.interpolants(t)
         atp, btp = self.interpolant_scheduler.interpolants_prime(t)
@@ -278,7 +192,7 @@ class DiffusionModel(FlowModel):
         return etat * x + bt * (etat * bt - btp) * s
         
 
-    def score_func(self, x: torch.Tensor | dgl.DGLGraph, t: torch.Tensor) -> AdjointState:
+    def score_func(self, x: torch.Tensor | dgl.DGLGraph, t: torch.Tensor) -> torch.Tensor:
         """
         Diffusion models predict the error function by default, with time going from 1 (noise) to 0 (data)
         Instead we want time to go from 0 (noise) to 1 (data)

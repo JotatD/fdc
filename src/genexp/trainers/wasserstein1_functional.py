@@ -1,7 +1,7 @@
 from ..models import DiffusionModel
 from .adjoint_matching import AdjointMatchingFinetuningTrainer
 import torch
-from maxentdiff.trainers.adjoint_matching import AdjointMatchingFinetuningTrainer, sample_trajectories_ddpm
+from genexp.trainers.adjoint_matching import AdjointMatchingFinetuningTrainer, sample_trajectories_ddpm
 from scipy.optimize import minimize
 from torch.autograd import grad  
 import torch.nn.functional as F

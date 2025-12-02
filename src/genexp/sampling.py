@@ -317,6 +317,31 @@ def sample_trajectories_memoryless(model: FlowModel, x0, T, avoid_inf=0.0, sampl
     return torch.stack(traj).permute(1,0,2), ts # flip to (B,T,d)
 
 
+class Sample(object):
+    def __init__(self, obj):
+        self.obj = obj
+
+    
+    @property
+    def full(self):
+        return self.obj
+    
+
+    @full.setter
+    def full(self, value):
+        self.obj = value
+
+
+    @property
+    def adjoint(self):
+        return self.obj
+    
+
+    @adjoint.setter
+    def adjoint(self, value):
+        self.obj = value
+
+
 class Sampler(object):
     def __init__(self, model: FlowModel, data_shape=None):
         self.model = model

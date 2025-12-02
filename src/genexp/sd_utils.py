@@ -11,8 +11,8 @@ import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
 import os
-from maxentdiff.models import StableDiffusion
-from maxentdiff.metrics import vendi_score
+from genexp.models import StableDiffusion
+from genexp.metrics import vendi_score
 import wandb
 import logging
 

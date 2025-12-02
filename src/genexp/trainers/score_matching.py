@@ -1,5 +1,5 @@
-from maxentdiff.models import DiffusionModel
-from maxentdiff.sampling import SDE
+from genexp.models import DiffusionModel
+from genexp.sampling import SDE
 import torch
 
 class ScoreMatchingTrainer(object):

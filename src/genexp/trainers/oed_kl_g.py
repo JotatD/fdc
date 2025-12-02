@@ -1,7 +1,7 @@
 from ..models import DiffusionModel
 from .adjoint_matching import AdjointMatchingFinetuningTrainer
 import torch
-from maxentdiff.trainers.adjoint_matching import AdjointMatchingFinetuningTrainer, sample_trajectories_ddpm
+from genexp.trainers.adjoint_matching import AdjointMatchingFinetuningTrainer, sample_trajectories_ddpm
 
 class OedKlTrainer(AdjointMatchingFinetuningTrainer):
     def __init__(self, model: DiffusionModel, 

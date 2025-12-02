@@ -6,14 +6,16 @@ from omegaconf import OmegaConf
 import torch
 from torch.utils.data import Dataset, ConcatDataset
 
-from maxentdiff.sampling import EulerMaruyamaSampler, Sampler
+from genexp.sampling import EulerMaruyamaSampler, Sampler, Sample
+import typing
+from typing import List, Callable, Optional
 
 
 # TODO change all traj_graph
 class LeanAdjointSolverFlow:
     """Solver as per adjoint matching paper."""
 
-    def __init__(self, gen_model: FlowModel, grad_reward_fn: callable, grad_f_k_fn: callable, device=None):
+    def __init__(self, gen_model: FlowModel, grad_reward_fn: Callable, grad_f_k_fn: Optional[Callable] = None, device: torch.Device = None):
         self.model = gen_model
         self.interpolant_scheduler = gen_model.interpolant_scheduler
         self.grad_reward_fn = grad_reward_fn
@@ -21,30 +23,14 @@ class LeanAdjointSolverFlow:
         self.device = device or torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
-    def step(self, adj, g_t, t, alpha, alpha_dot, dt, upper_edge_mask):
+    def step(self, adj: torch.Tensor, x_t: Sample, t: torch.Tensor, alpha: torch.Tensor, alpha_dot: torch.Tensor, dt: torch.Tensor):
         adj_t = adj.detach() # detach to avoid gradients
 
-        with torch.enable_grad(): # TODO change to general
-            # turn on autograd for the graph
-            g_t.ndata["x_t"] = g_t.ndata["x_t"].detach().requires_grad_(True)
-            node_batch_idx = torch.zeros(g_t.num_nodes(), dtype=torch.long)
+        with torch.enable_grad():
+            x_t.adjoint = x_t.adjoint.detach().requires_grad_(True)
+            v_pred = self.model.velocity_field(x_t.full, t)
 
-            # predict the destination of the trajectory given the current time-point
-            dst_dict = self.model.vector_field(
-                g_t, 
-                t=torch.full((g_t.batch_size,), t, device=g_t.device),
-                node_batch_idx=node_batch_idx,
-                upper_edge_mask=upper_edge_mask,
-                apply_softmax=True,
-                remove_com=True
-            )
-            # take integration step for positions
-            x_1 = dst_dict['x']
-            x_t = g_t.ndata['x_t']
-
-            v_pred = self.model.vector_field.vector_field(x_t, x_1, alpha[0], alpha_dot[0])
-
-            eps_pred = 2 * v_pred - alpha_dot[0]/(alpha[0]+dt) * x_t
+            eps_pred = 2 * v_pred - alpha_dot/(alpha + dt) * x_t.adjoint
 
             g_term = (adj_t * eps_pred).sum()
             v = torch.autograd.grad(g_term, x_t, retain_graph=False)[0]
@@ -53,15 +39,14 @@ class LeanAdjointSolverFlow:
 
         adj_tmh = adj_t + dt * v
         if self.grad_f_k_fn is not None:
-            grad_list = self.grad_f_k_fn(g_t, t + dt) # returns list
-            grad_f_k = torch.cat(grad_list, dim=0).to(adj.device) # concat
+            grad_f_k = self.grad_f_k_fn(x_t, t + dt).to(adj_t.device)
 
             assert grad_f_k.shape == x_t.shape
             adj_tmh = adj_t + dt * v - dt * grad_f_k
             
         return adj_tmh.detach(), v_pred.detach()
 
-    def solve(self, trajectories, ts):
+    def solve(self, trajectories: List[Sample], ts: torch.Tensor):
         """Solving loop."""
         T = ts.shape[0]
         assert T == len(trajectories)
@@ -72,42 +57,33 @@ class LeanAdjointSolverFlow:
         alpha_s = self.interpolant_scheduler.alpha_t(ts)
         alpha_dot_s = self.interpolant_scheduler.alpha_t_prime(ts)
 
-        trajectories = trajectories[::-1] # flip to go from 1 to 0      
-        g1 = trajectories[0]
-        minus_adj = self.grad_reward_fn(g1) # returns a list of tensors (representing the adjoint)
-        adj = - torch.cat(minus_adj, dim=0) # flip the sign of the adjoint and concatenate 
-
-        row_mask = ~torch.isnan(adj).all(dim=1)
+        x_1 = trajectories[-1]
+        adj = -self.grad_reward_fn(x_1.full)
 
         trajs_adj = []
         traj_v_pred = []
-        upper_edge_mask = g1.edata['ue_mask'] # (edges, 1)
 
         for i in range(1, T):
             t = ts[i]
-            g_t = trajectories[i]
+            x_t = trajectories[T - i - 1]
             alpha = alpha_s[i]
             alpha_dot = alpha_dot_s[i]
-            adj, v_pred = self.step(adj=adj, g_t=g_t, t=t, alpha=alpha, alpha_dot=alpha_dot, dt=dt, upper_edge_mask=upper_edge_mask) # TODO change to general
+            adj, v_pred = self.step(adj=adj, x_t=x_t, t=t, alpha=alpha, alpha_dot=alpha_dot, dt=dt)
             trajs_adj.append(adj.detach())
             traj_v_pred.append(v_pred.detach())
-
-            tmp_row_mask = ~torch.isnan(adj).all(dim=1)
-            row_mask = torch.logical_and(row_mask, tmp_row_mask)
         
         res = {
                 't': ts[1:], # (T,)
-                'alpha': alpha_s[1:, 0], # (T,)
-                'alpha_dot': alpha_dot_s[1:, 0], # (T,)
-                'traj_x': trajectories[1:], # list of dgl graphs (T, )
-                'traj_adj': torch.stack(trajs_adj), # (T, nodes, 3)
-                'traj_v_pred': torch.stack(traj_v_pred), # (T, nodes, 3)
-                'row_mask': row_mask, # (nodes,)
+                'alpha': alpha_s[1:], # (T,)
+                'alpha_dot': alpha_dot_s[1:], # (T,)
+                'traj_x': trajectories[1:], # array-like of len T
+                'traj_adj': torch.stack(trajs_adj), # (T, data_shape)
+                'traj_v_pred': torch.stack(traj_v_pred), # (T, data_shape)
             }
 
         assert res['traj_adj'].shape == res['traj_v_pred'].shape
         assert res['traj_adj'].shape[0] == res['t'].shape[0]
-        assert len(res['traj_graph']) == res['t'].shape[0] # TODO change
+        assert len(res['traj_x']) == res['t'].shape[0]
         assert res['alpha'].shape[0] == res['t'].shape[0] and res['alpha_dot'].shape[0] == res['t'].shape[0]
         assert res['t'].shape[0] == ts.shape[0] - 1
         return res
@@ -116,14 +92,11 @@ class LeanAdjointSolverFlow:
 class AMDataset(Dataset):
     def __init__(self, solver_info):
         solver_info = self.detach_all(solver_info)
-        self.t = solver_info['t'] # (T,)
-        self.sigma_t = solver_info['sigma_t'] # (T,)
-        self.alpha = solver_info['alpha'] # (T,)
-        self.alpha_dot = solver_info['alpha_dot']# (T,)
-        self.traj_g = solver_info['traj_x'] # trajectories (T, batch_shape)
+        self.t = solver_info['ts'] # (T,)
+        self.sigmas = solver_info['sigmas'] # (T,)
+        self.traj_x = solver_info['traj_x'] # trajectories (T, batch_shape)
         self.traj_adj = solver_info['traj_adj'] # (T, adjoint_shape)
         self.traj_v_base = solver_info['traj_v_pred'] # (T, adjoint_shape)
-        self.row_mask = solver_info['row_mask'] # (nodes,)
 
         self.T = self.t.size(0) # T = number of time steps
         self.bs = 1 # len(self.traj_g[0].batch_num_nodes())
@@ -133,14 +106,11 @@ class AMDataset(Dataset):
 
     def __getitem__(self, idx):
         return {
-            't': self.t,
-            'sigma_t': self.sigma_t,
-            'alpha': self.alpha,
-            'alpha_dot': self.alpha_dot,
-            'traj_graph': self.traj_g,
+            'ts': self.t,
+            'sigmas': self.sigma_t,
+            'traj_x': self.traj_x,
             'traj_adj': self.traj_adj,
             'traj_v_base': self.traj_v_base,
-            'row_mask': self.row_mask,
         }
     
     def detach_all(self, solver_info):
@@ -254,8 +224,12 @@ class AMTrainerFlow:
 
 
     def sample_trajectories(self):
-        N = self.sampling_config.num_samples 
-        trajectories = self.sampler.sample_trajectories(self.config.)
+        N = self.sampling_config.num_samples
+        T = self.sampling_config.num_integration_steps + 1
+        trajectories = self.sampler.sample_trajectories(N=N, T=T)
+        ts = torch.linspace(0., 1., T).to(self.base_model.device)
+        sigmas = self.base_model.interpolant_scheduler.memoryless_sigma(ts)
+        return trajectories, ts, sigmas
 
 
     def generate_dataset(self):
@@ -278,9 +252,9 @@ class AMTrainerFlow:
                     print(f"Rerolling: got {trajectories[0].num_nodes()} nodes (> {self.max_nodes})")
 
             # graph_trajectories is a list of the intermediate graphs
-            solver_info = solver.solve(graph_trajectories=trajectories, ts=ts)
+            solver_info = solver.solve(trajectories=trajectories, ts=ts)
             # add sigma_t to solver_info
-            solver_info['sigma_t'] = sigmas
+            solver_info['sigmas'] = sigmas
             
             if (~solver_info['row_mask']).all():
                 print("Row mask is all True, skipping sample")
