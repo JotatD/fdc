@@ -219,8 +219,8 @@ class AMTrainerFlow:
     def sample_trajectories(self):
         N = self.sampling_config.num_samples
         T = self.sampling_config.num_integration_steps + 1
-        trajectories = self.sampler.sample_trajectories(N=N, T=T)
-        ts = torch.linspace(0., 1., T).to(self.sampler.device)
+        trajectories, ts = self.sampler.sample_trajectories(N=N, T=T)
+        ts = ts.to(self.sampler.device)
         sigmas = self.base_model.interpolant_scheduler.memoryless_sigma_t(ts)
         return trajectories, ts, sigmas
 
@@ -238,8 +238,7 @@ class AMTrainerFlow:
         iterations = self.sampling_config.num_samples // self.config.batch_size
         for i in range(iterations):
             with torch.no_grad():
-                while True:
-                    trajectories, ts, sigmas = self.sample_trajectories()
+                trajectories, ts, sigmas = self.sample_trajectories()
 
             # graph_trajectories is a list of the intermediate graphs
             solver_info = solver.solve(trajectories=trajectories, ts=ts)

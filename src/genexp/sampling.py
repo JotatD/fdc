@@ -355,7 +355,7 @@ class Sampler(object):
         return torch.randn(N, *self.data_shape, device=device)
 
 
-    def sample_trajectories(self, N=1, T=1000, sample_jumps=True, device=None):
+    def sample_trajectories(self, N=1, T=1000, sample_jumps=False, device=None):
         """
         Sample N trajectories of length T using memoryless sampling
         """
@@ -364,7 +364,7 @@ class Sampler(object):
         if not sample_jumps:
             ts = torch.linspace(0, 1, T).to(x0.device)
         else:
-            ts = torch.linspace(0, 1, 1000) # TODO remove 1000 magic? use default param? also need T < magic
+            ts = torch.linspace(0, 1, 1000)
             # sample T ts
             idxs = torch.randperm(998)+1
             idxs = idxs[:T-2]
