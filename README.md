@@ -2,7 +2,7 @@
 
 
 [![arXiv](http://img.shields.io/badge/arxiv-2511.22640-red?logo=arxiv)](https://www.arxiv.org/abs/2511.22640)
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/riccardodesanti/generative-exploration/blob/development/<NOTEBOOK.ipynb>)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/riccardodesanti/generative-exploration/blob/development/notebooks/tutorial_fdc.ipynb)
 
 This repository contains the official implementation of the Flow Density Control algorithm, a method for optimizing general utilities beyond entropy-regularized reward maximization. 
 
