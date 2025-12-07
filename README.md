@@ -24,7 +24,7 @@ pip3 install -e .
 
 ## Usage
 
-To use FDC on your own models, follow the installation instructions above and check the ``notebooks/tutorial_fdc.ipynb`` notebook for a typical first example using the Manifold Exploration functional.
+To use FDC on your own models, follow the installation instructions above and check the ``notebooks/tutorial_fdc.ipynb`` notebook for a typical first example using the Manifold Exploration functional. Check the `src/genexp/trainers` folder to see all implemented utilities/divergences.
 
 For more fine-grained control (especially if your model generates something other than a PyTorch Tensor):
 
