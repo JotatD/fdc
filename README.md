@@ -38,17 +38,23 @@ If your model outputs a PyTorch tensor, we recommend using our `EulerMaruyamaSam
 
 ## Citation
 
-If you use this code in your research, please include the following citation in your work:
+If you use this code in your research, please include the following citations in your work:
 
 
 ```
-@misc{desanti2025flowdensitycontrolgenerative,
+@misc{de2025flow,
       title={Flow Density Control: Generative Optimization Beyond Entropy-Regularized Fine-Tuning}, 
       author={Riccardo De Santi and Marin Vlastelica and Ya-Ping Hsieh and Zebang Shen and Niao He and Andreas Krause},
       year={2025},
-      eprint={2511.22640},
-      archivePrefix={arXiv},
-      primaryClass={cs.LG},
+      booktitle={Advances in Neural Information Processing Systems},
       url={https://arxiv.org/abs/2511.22640}, 
+}
+
+@misc{de2025provable,
+      title={Provable Maximum Entropy Manifold Exploration via Diffusion Models}, 
+      author={Riccardo De Santi* and Marin Vlastelica* and Ya-Ping Hsieh and Zebang Shen and Niao He and Andreas Krause},
+      year={2025},
+      booktitle={Proceedings of the 42nd International Conference on Machine Learning},
+      url={https://arxiv.org/abs/2506.15385}, 
 }
 ```
