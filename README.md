@@ -42,7 +42,7 @@ If you use this code in your research, please include the following citations in
 
 
 ```
-@misc{de2025flow,
+@inproceedings{de2025flow,
       title={Flow Density Control: Generative Optimization Beyond Entropy-Regularized Fine-Tuning}, 
       author={Riccardo De Santi and Marin Vlastelica and Ya-Ping Hsieh and Zebang Shen and Niao He and Andreas Krause},
       year={2025},
@@ -50,7 +50,7 @@ If you use this code in your research, please include the following citations in
       url={https://arxiv.org/abs/2511.22640}, 
 }
 
-@misc{de2025provable,
+@inproceedings{de2025provable,
       title={Provable Maximum Entropy Manifold Exploration via Diffusion Models}, 
       author={Riccardo De Santi* and Marin Vlastelica* and Ya-Ping Hsieh and Zebang Shen and Niao He and Andreas Krause},
       year={2025},
