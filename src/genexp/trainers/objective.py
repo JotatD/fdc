@@ -10,6 +10,7 @@ import numpy as np
 import torch
 
 DEVICE = torch.device("cpu")
+EPS = 1e-8  # Small constant for numerical stability
 
 
 @dataclass
@@ -77,17 +78,22 @@ class ZDTProblemTorch:
 
 class ZDT1Torch(ZDTProblemTorch):
     def h(self, f1: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
-        return 1.0 - torch.sqrt(f1 / g)
+        return 1.0 - torch.sqrt(torch.clamp(f1 / torch.clamp(g, min=EPS), min=0.0))
 
 
 class ZDT2Torch(ZDTProblemTorch):
     def h(self, f1: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
-        return 1.0 - (f1 / g) ** 2
+        return 1.0 - (f1 / torch.clamp(g, min=EPS)) ** 2
 
 
 class ZDT3Torch(ZDTProblemTorch):
     def h(self, f1: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
-        return 1.0 - torch.sqrt(f1 / g) - (f1 / g) * torch.sin(10.0 * torch.pi * f1)
+        ratio = f1 / torch.clamp(g, min=EPS)
+        return (
+            1.0
+            - torch.sqrt(torch.clamp(ratio, min=0.0))
+            - ratio * torch.sin(10.0 * torch.pi * f1)
+        )
 
 
 class ZDT4Torch(ZDTProblemTorch):
@@ -102,12 +108,14 @@ class ZDT4Torch(ZDTProblemTorch):
         if self.n < 2:
             raise ValueError("ZDT problems require n >= 2.")
         Xi = X[:, 1:]
-        return 1.0 + 10.0 * (self.n - 1) + torch.sum(
-            Xi ** 2 - 10.0 * torch.cos(4.0 * torch.pi * Xi), dim=1
+        return (
+            1.0
+            + 10.0 * (self.n - 1)
+            + torch.sum(Xi**2 - 10.0 * torch.cos(4.0 * torch.pi * Xi), dim=1)
         )
 
     def h(self, f1: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
-        return 1.0 - torch.sqrt(f1 / g)
+        return 1.0 - torch.sqrt(torch.clamp(f1 / torch.clamp(g, min=EPS), min=0.0))
 
 
 class ZDT5Torch(ZDTProblemTorch):
@@ -118,7 +126,7 @@ class ZDT5Torch(ZDTProblemTorch):
 
     def f1(self, X: torch.Tensor) -> torch.Tensor:
         # Map x1 from [-5, 5] to [0, 1] so the Pareto front matches ZDT1.
-        return (X[:, 0] + 5.0) / 10.0
+        return torch.clamp((X[:, 0] + 5.0) / 10.0, min=EPS, max=1.0)
 
     def g(self, X: torch.Tensor) -> torch.Tensor:
         if self.n < 2:
@@ -127,7 +135,7 @@ class ZDT5Torch(ZDTProblemTorch):
         return 1.0 + 9.0 * torch.abs(r2 - 1.0)
 
     def h(self, f1: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
-        return 1.0 - torch.sqrt(f1 / g)
+        return 1.0 - torch.sqrt(torch.clamp(f1 / torch.clamp(g, min=EPS), min=0.0))
 
     def sample_pareto_set_X(self, N: int) -> torch.Tensor:
         rng = np.random.default_rng()
@@ -138,7 +146,9 @@ class ZDT5Torch(ZDTProblemTorch):
         return torch.from_numpy(X).to(dtype=torch.float32, device=self.device)
 
 
-def sample_uniform(problem: ZDTProblemTorch, N: int, rng: np.random.Generator = None) -> torch.Tensor:
+def sample_uniform(
+    problem: ZDTProblemTorch, N: int, rng: np.random.Generator = None
+) -> torch.Tensor:
     rng = rng or np.random.default_rng()
     lb, ub = problem.bounds()
     lb_np = lb.cpu().numpy()
@@ -149,7 +159,7 @@ def sample_uniform(problem: ZDTProblemTorch, N: int, rng: np.random.Generator = 
 
 def main(output_path: str = "zdt_pareto.png"):
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    
+
     problems = [
         ("ZDT1", ZDT1Torch(n=2)),
         ("ZDT2", ZDT2Torch(n=2)),
@@ -160,34 +170,36 @@ def main(output_path: str = "zdt_pareto.png"):
 
     N_samples = 200
     N_front = 400
-    
+
     for name, prob in problems:
         # Sample from Pareto set and front
         Xp_sampled = prob.sample_pareto_set_X(N_samples).cpu().numpy()
         Fp_sampled = prob.evaluate(torch.from_numpy(Xp_sampled)).cpu().numpy()
         Fp_front = prob.sample_pareto_front(N_front).cpu().numpy()
-        
+
         # Create a new figure for each problem
         fig, axes = plt.subplots(1, 2, figsize=(12, 6))
 
         # Plot Pareto frontier (objective space)
-        axes[0].plot(Fp_front[:, 0], Fp_front[:, 1], label='Pareto Front')
-        axes[0].scatter(Fp_sampled[:, 0], Fp_sampled[:, 1], s=20, label='Sampled Points')
-        axes[0].set_title(f'{name} - Pareto Frontier (Objective Space, maximize)')
-        axes[0].set_xlabel('f1 (maximize)')
-        axes[0].set_ylabel('f2 (maximize)')
+        axes[0].plot(Fp_front[:, 0], Fp_front[:, 1], label="Pareto Front")
+        axes[0].scatter(
+            Fp_sampled[:, 0], Fp_sampled[:, 1], s=20, label="Sampled Points"
+        )
+        axes[0].set_title(f"{name} - Pareto Frontier (Objective Space, maximize)")
+        axes[0].set_xlabel("f1 (maximize)")
+        axes[0].set_ylabel("f2 (maximize)")
         axes[0].grid(True)
         axes[0].legend()
 
         # Plot Pareto set (parameter space) - reconstruct x1 from f1
         axes[1].scatter(Xp_sampled[:, 0], Xp_sampled[:, 1], s=20)
-        axes[1].set_title(f'{name} - Pareto Set (Parameter Space)')
-        axes[1].set_xlabel('x1')
-        axes[1].set_ylabel('x2')
+        axes[1].set_title(f"{name} - Pareto Set (Parameter Space)")
+        axes[1].set_xlabel("x1")
+        axes[1].set_ylabel("x2")
         axes[1].grid(True)
 
         # Save the figure
-        output_file = f'./data/{name}_pareto.png'
+        output_file = f"./data/{name}_pareto.png"
         plt.tight_layout()
         fig.savefig(output_file)
         plt.close(fig)

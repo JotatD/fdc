@@ -21,17 +21,24 @@ from genexp.utils import seed_everything
 os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.FileHandler("logs/multi_objective.log"),
-        logging.StreamHandler()  # Also print to console
-    ]
+        logging.StreamHandler(),  # Also print to console
+    ],
 )
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--sampling_set_n", type=int, default=5, help="Number of points in the sampling set")
-parser.add_argument("--mode", type=str, default="full", choices=["pretrain_only", "pretrain_and_after", "full"], 
-                    help="Mode: pretrain_only (no sampling), pretrain_and_after (sample after), full (sample before+after)")
+parser.add_argument(
+    "--sampling_set_n", type=int, default=5, help="Number of points in the sampling set"
+)
+parser.add_argument(
+    "--mode",
+    type=str,
+    default="full",
+    choices=["pretrain_only", "pretrain_and_after", "full"],
+    help="Mode: pretrain_only (no sampling), pretrain_and_after (sample after), full (sample before+after)",
+)
 
 args = parser.parse_args()
 sampling_set_n = args.sampling_set_n
@@ -44,7 +51,9 @@ num_samples_gaussian = 5000  # Number of samples to generate
 
 # Generate samples
 
-dataset = torch.distributions.MultivariateNormal(mean, covariance).sample((num_samples_gaussian,))
+dataset = torch.distributions.MultivariateNormal(mean, covariance).sample(
+    (num_samples_gaussian,)
+)
 
 network = nn.Sequential(
     nn.Linear(2 * sampling_set_n + 1, 512),
@@ -65,7 +74,7 @@ pl_model = LightningDiffusion(model)
 # Generate samples before finetuning
 samples_before = None
 # if mode == "full":
-#     presampler = EulerMaruyamaSampler(model.to(device), data_shape=(2 * sampling_set_n,), device=device) 
+#     presampler = EulerMaruyamaSampler(model.to(device), data_shape=(2 * sampling_set_n,), device=device)
 #     samples_before = []
 #     batch_size = 256
 #     num_samples = 10000
@@ -87,13 +96,17 @@ os.makedirs("figs", exist_ok=True)
 # torch.save(model.model.state_dict(), f"models/multi_obj_pretrained_{sampling_set_n}.pth")
 
 # Load model
-model.model.load_state_dict(torch.load(f"models/multi_obj_pretrained_{sampling_set_n}.pth", map_location=device))
+model.model.load_state_dict(
+    torch.load(f"models/multi_obj_pretrained_{sampling_set_n}.pth", map_location=device)
+)
 
 # Visualize pre-trained density
 # samples_after = None
 # if mode in ["pretrain_and_after", "full"]:
 
-sampler = EulerMaruyamaSampler(model.to(device), data_shape=(2 * sampling_set_n,), device=device)
+sampler = EulerMaruyamaSampler(
+    model.to(device), data_shape=(2 * sampling_set_n,), device=device
+)
 batch_size = 256
 num_samples = 10000
 
@@ -108,33 +121,37 @@ batch_size = 256
 num_samples = 10000
 
 config = OmegaConf.load("../configs/example_fdc.yaml")
-sampler = EulerMaruyamaSampler(model.to(device), data_shape=(2 * sampling_set_n,), device=device)
+sampler = EulerMaruyamaSampler(
+    model.to(device), data_shape=(2 * sampling_set_n,), device=device
+)
 model = model.to(device)
 seed_everything(config.seed)
 
 
 print("Next is the flow density control fine-tuning...")
 fdc_trainer = ChebyshevTrainer(
-    config=config, 
-    model=copy.deepcopy(model), 
+    config=config,
+    model=copy.deepcopy(model),
     base_model=copy.deepcopy(model),
     pre_trained_model=copy.deepcopy(model),
     device=device,
     sampler=sampler,
-    ref=torch.tensor([-11.0, -11.0]).to(device)
+    ref=torch.tensor([-11.0, -11.0]).to(device),
 )
 
-# for k in tqdm(range(config.num_md_iterations)):
-#     for i in range(config.adjoint_matching.num_iterations):
-#         am_dataset = fdc_trainer.generate_dataset()
-#         fdc_trainer.finetune(am_dataset, steps=config.adjoint_matching.finetune_steps)
-#     fdc_trainer.update_base_model()
+for k in tqdm(range(config.num_md_iterations)):
+    for i in range(config.adjoint_matching.num_iterations):
+        am_dataset = fdc_trainer.generate_dataset()
+        fdc_trainer.finetune(am_dataset, steps=config.adjoint_matching.finetune_steps)
+    fdc_trainer.update_base_model()
 
 # # Save the fine-tuned model
 # torch.save(fdc_trainer.fine_model.model.state_dict(), f"models/multi_obj_finetuned_{sampling_set_n}.pth")
 
 # Load the fine-tuned model
-fdc_trainer.fine_model.model.load_state_dict(torch.load(f"models/multi_obj_finetuned_{sampling_set_n}.pth", map_location=device))
+fdc_trainer.fine_model.model.load_state_dict(
+    torch.load(f"models/multi_obj_finetuned_{sampling_set_n}.pth", map_location=device)
+)
 
 # Visualize fine-tuned model's density
 sampler = EulerMaruyamaSampler(
@@ -157,12 +174,16 @@ ax = ax.flatten()
 # Next 5 subplots: each point from the output (assuming 2*sampling_set_n dimensions)
 breakpoint()
 for i in range(sampling_set_n):
-    ax[i+1].scatter(samples_fdc[:, i, 0].detach().cpu(), samples_fdc[:, i, 1].detach().cpu(), alpha=0.5)
-    ax[i+1].set_title(f"Point {i+1} after finetuning")
+    ax[i + 1].scatter(
+        samples_fdc[:, i, 0].detach().cpu(),
+        samples_fdc[:, i, 1].detach().cpu(),
+        alpha=0.5,
+    )
+    ax[i + 1].set_title(f"Point {i + 1} after finetuning")
 
 # Hide the 6th subplot if sampling_set_n is 5
 if sampling_set_n < 5:
-    ax[5].axis('off')
+    ax[5].axis("off")
 
 plt.tight_layout()
 fig.savefig(f"figs/fdc_density_objective_{sampling_set_n}.png")
