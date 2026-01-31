@@ -55,6 +55,7 @@ def main() -> None:
             obj = torch.relu((rew - ref) * (1/lambda_))**k
             s_lambda = obj.min()
             s_lambdas.append(s_lambda)
+            
             s_lambda_2 = -torch.logsumexp(-obj, dim=0)
             s_lambda_approximations.append(s_lambda_2)
             # print(f"s_lambda: {s_lambda} -- s_lambda_2: {s_lambda_2}")

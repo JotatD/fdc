@@ -1,10 +1,12 @@
-from ..models import DiffusionModel
-from .adjoint_matching import AMTrainerFlow
-from ..sampling import Sampler, sample_trajectories_ddpm
-
-from omegaconf import OmegaConf
 from typing import Optional
+
 import torch
+from omegaconf import OmegaConf
+
+from ..models import DiffusionModel
+from ..sampling import Sampler, sample_trajectories_ddpm
+from .adjoint_matching import AMTrainerFlow
+
 
 class OedKlTrainer(AMTrainerFlow):
     def __init__(self,
@@ -27,7 +29,8 @@ class OedKlTrainer(AMTrainerFlow):
             print("Using first variation of OED objective and KL divergence as reward, lambda:", lmbda)
             # linear kernel case \Phi(x) = x
             # oed_grad(x) - alpha_div * (score_base(x) - score_pre(x))
-            grad_reward_fn = lambda x: lmbda * self.compute_oed_grad(x, base_model, num_traj_MC, lambda_reg_ridge) - alpha_div * (base_model.score_func(x, torch.tensor(0, device=x.device).float().detach()) - pre_trained_model.score_func(x, torch.tensor(0, device=x.device).float().detach()))
+            def grad_reward_fn(x):
+                return lmbda * self.compute_oed_grad(x, base_model, num_traj_MC, lambda_reg_ridge) - alpha_div * (base_model.score_func(x, torch.tensor(0, device=x.device).float().detach()) - pre_trained_model.score_func(x, torch.tensor(0, device=x.device).float().detach()))
             self.lmbda = lmbda
         else:
             raise NotImplementedError

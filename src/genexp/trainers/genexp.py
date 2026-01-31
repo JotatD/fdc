@@ -1,11 +1,12 @@
+import copy
+from typing import Optional
+
+import torch
 from omegaconf import OmegaConf
+
 from genexp.models import FlowModel
 from genexp.sampling import Sampler
 from genexp.trainers.adjoint_matching import AMTrainerFlow
-from typing import Callable, Optional
-
-import torch
-import copy
 
 
 class FDCTrainerFlow(AMTrainerFlow):
@@ -23,7 +24,8 @@ class FDCTrainerFlow(AMTrainerFlow):
         self.epsilon = torch.tensor(config.epsilon).to(device)
         self.base_base_model = copy.deepcopy(base_model)
         self.combined_score = lambda s, t: base_model.score_func(s, t) - self.beta * self.base_base_model.score_func(s, t)
-        grad_reward_fn = lambda x: -self.gamma * self.combined_score(x, 1. - self.epsilon)
+        def grad_reward_fn(x):
+            return -self.gamma * self.combined_score(x, 1. - self.epsilon)
 
         super().__init__(config.adjoint_matching, model, base_model, grad_reward_fn, None, device, verbose, sampler)
 

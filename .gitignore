@@ -182,3 +182,6 @@ wandb
 output
 sweep_config_fdc.yaml
 scripts/sweep.sh
+*.png
+settings.json
+*.pth

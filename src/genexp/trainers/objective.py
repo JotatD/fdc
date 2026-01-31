@@ -15,14 +15,15 @@ DEVICE = torch.device("cpu")
 @dataclass
 class ZDTProblemTorch:
     n: int
+    device: torch.device = DEVICE
 
     def bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        lb = torch.zeros(self.n, dtype=torch.float32, device=DEVICE)
-        ub = torch.ones(self.n, dtype=torch.float32, device=DEVICE)
+        lb = torch.zeros(self.n, dtype=torch.float32, device=self.device)
+        ub = torch.ones(self.n, dtype=torch.float32, device=self.device)
         return lb, ub
 
     def validate(self, X: torch.Tensor) -> torch.Tensor:
-        X = X.to(dtype=torch.float32, device=DEVICE)
+        X = X.to(dtype=torch.float32, device=self.device)
         if X.ndim != 2 or X.shape[1] != self.n:
             raise ValueError(f"X must have shape (N, {self.n}), got {tuple(X.shape)}")
         return X
@@ -56,7 +57,7 @@ class ZDTProblemTorch:
         rng = np.random.default_rng()
         X = np.zeros((N, self.n), dtype=np.float32)
         X[:, 0] = rng.random(N)
-        return torch.from_numpy(X).to(dtype=torch.float32, device=DEVICE)
+        return torch.from_numpy(X).to(dtype=torch.float32, device=self.device)
 
     def sample_pareto_set(self, N: int) -> torch.Tensor:
         """Sample N points from the Pareto set and evaluate them.
@@ -67,7 +68,7 @@ class ZDTProblemTorch:
     def sample_pareto_front(self, N: int) -> torch.Tensor:
         """Sample N points analytically from the Pareto front.
         Returns shape (N, 2) tensor of [f1, f2] values."""
-        f1 = torch.linspace(0.0, 1.0, N, dtype=torch.float32, device=DEVICE)
+        f1 = torch.linspace(0.0, 1.0, N, dtype=torch.float32, device=self.device)
         g = torch.ones_like(f1)
         f2 = g * self.h(f1, g)
         # Maximization variant: negate minimization objectives.
@@ -91,8 +92,8 @@ class ZDT3Torch(ZDTProblemTorch):
 
 class ZDT4Torch(ZDTProblemTorch):
     def bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        lb = torch.full((self.n,), -5.0, dtype=torch.float32, device=DEVICE)
-        ub = torch.full((self.n,), 5.0, dtype=torch.float32, device=DEVICE)
+        lb = torch.full((self.n,), -5.0, dtype=torch.float32, device=self.device)
+        ub = torch.full((self.n,), 5.0, dtype=torch.float32, device=self.device)
         lb[0] = 0.0
         ub[0] = 1.0
         return lb, ub
@@ -111,13 +112,13 @@ class ZDT4Torch(ZDTProblemTorch):
 
 class ZDT5Torch(ZDTProblemTorch):
     def bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        lb = torch.full((self.n,), -1.0, dtype=torch.float32, device=DEVICE)
-        ub = torch.full((self.n,), 1.0, dtype=torch.float32, device=DEVICE)
+        lb = torch.full((self.n,), -5.0, dtype=torch.float32, device=self.device)
+        ub = torch.full((self.n,), 5.0, dtype=torch.float32, device=self.device)
         return lb, ub
 
     def f1(self, X: torch.Tensor) -> torch.Tensor:
-        # Map x1 from [-1, 1] to [0, 1] so the Pareto front matches ZDT1.
-        return 0.5 * (X[:, 0] + 1.0)
+        # Map x1 from [-5, 5] to [0, 1] so the Pareto front matches ZDT1.
+        return (X[:, 0] + 5.0) / 10.0
 
     def g(self, X: torch.Tensor) -> torch.Tensor:
         if self.n < 2:
@@ -134,7 +135,7 @@ class ZDT5Torch(ZDTProblemTorch):
         X = np.zeros((N, self.n), dtype=np.float32)
         X[:, 0] = np.cos(theta)
         X[:, 1] = np.sin(theta)
-        return torch.from_numpy(X).to(dtype=torch.float32, device=DEVICE)
+        return torch.from_numpy(X).to(dtype=torch.float32, device=self.device)
 
 
 def sample_uniform(problem: ZDTProblemTorch, N: int, rng: np.random.Generator = None) -> torch.Tensor:
@@ -143,7 +144,7 @@ def sample_uniform(problem: ZDTProblemTorch, N: int, rng: np.random.Generator = 
     lb_np = lb.cpu().numpy()
     ub_np = ub.cpu().numpy()
     samples = rng.random((N, problem.n)).astype(np.float32) * (ub_np - lb_np) + lb_np
-    return torch.from_numpy(samples).to(dtype=torch.float32, device=DEVICE)
+    return torch.from_numpy(samples).to(dtype=torch.float32, device=problem.device)
 
 
 def main(output_path: str = "zdt_pareto.png"):

@@ -22,7 +22,7 @@ def make_grid(side_length: float, grid_size: int) -> np.ndarray:
 def main() -> None:
     parser = argparse.ArgumentParser(description="ZDT5 grid sampling and plots.")
     parser.add_argument("--grid-size", type=int, default=300, help="Points per axis.")
-    parser.add_argument("--side-length", type=float, default=2.05, help="Square side length.")
+    parser.add_argument("--side-length", type=float, default=6, help="Square side length.")
     parser.add_argument(
         "--circle-tol",
         type=float,
