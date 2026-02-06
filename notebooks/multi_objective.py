@@ -2,8 +2,10 @@ import argparse
 import copy
 import logging
 import os
+from datetime import datetime
 
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 from omegaconf import OmegaConf
 from pytorch_lightning import Trainer
@@ -15,7 +17,7 @@ from genexp.lighting_diffusion import LightningDiffusion
 from genexp.models import DiffusionModel
 from genexp.sampling import VPSDE, EulerMaruyamaSampler
 from genexp.trainers.chebyshev import ChebyshevTrainer
-from genexp.utils import seed_everything
+from genexp.utils import seed_everything, set_aggressive_logging
 
 
 def setup_logging():
@@ -25,7 +27,9 @@ def setup_logging():
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[
-            logging.FileHandler("logs/multi_objective.log"),
+            logging.FileHandler(
+                f"logs/multi_objective_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+            ),
         ],
     )
     logging.info("Logging is set up.")
@@ -63,7 +67,6 @@ def generate_samples(model, device, sampling_set_n, batch_size, num_samples, res
     )
     samples = []
     for i in tqdm(range(num_samples // batch_size + 1)):
-        
         trajs, ts = sampler.sample_trajectories(N=batch_size, T=1000, device=device)
         samples.append(trajs[-1].full.detach().cpu())
     samples = torch.vstack(samples)[:num_samples]
@@ -137,7 +140,10 @@ def plot_results(args, sampling_set_n, samples_before=None, samples_after=None, 
     num_cols = 3
     num_rows = (num_plots + num_cols - 1) // num_cols
     fig, ax = plt.subplots(num_rows, num_cols, figsize=(6 * num_cols, 6 * num_rows))
-    ax = ax.flatten() if num_plots > 1 else [ax]
+    if isinstance(ax, np.ndarray):
+        ax = ax.flatten().tolist()
+    else:
+        ax = [ax]
 
     plot_idx = 0
 
@@ -177,18 +183,23 @@ def plot_results(args, sampling_set_n, samples_before=None, samples_after=None, 
 def main():
     """Main execution function."""
     setup_logging()
-    
+
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--sampling_set_n", type=int, default=5, help="Number of points in the sampling set"
-    )
+    parser.add_argument("--sampling_set_n", type=int, default=5, help="Number of points in the sampling set")
     parser.add_argument("-sample-before-pretrain", action="store_true", help="Sample before pretraining")
     parser.add_argument("-pretrain", action="store_true", help="Pretrain the model")
     parser.add_argument("-sample-after-pretrain", action="store_true", help="Sample after pretraining")
     parser.add_argument("-finetune", action="store_true", help="Finetune the model")
     parser.add_argument("-sample-after-finetune", action="store_true", help="Sample after finetuning")
+    parser.add_argument("--aggressive-logging", action="store_true", help="Enable aggressive tensor logging for debugging")
 
     args = parser.parse_args()
+
+    # Set aggressive logging flag
+    set_aggressive_logging(args.aggressive_logging)
+
+    logging.info("Starting multi-objective diffusion experiment...")
+    logging.info(f"Arguments: {args}")
     sampling_set_n = args.sampling_set_n
 
     # Setup model and device
@@ -229,7 +240,7 @@ def main():
     )
 
     if args.sample_after_finetune:
-        samples_fdc = generate_samples(model, device, sampling_set_n, batch_size, 10, reshape=True)
+        samples_fdc = generate_samples(model, device, sampling_set_n, batch_size, num_samples, reshape=True)
 
     # Plot results
     plot_results(args, sampling_set_n, samples_before, samples_after, samples_fdc)

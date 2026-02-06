@@ -7,6 +7,7 @@ from omegaconf import OmegaConf
 from genexp.models import FlowModel
 from genexp.sampling import Sampler
 from genexp.trainers.adjoint_matching import AMTrainerFlow
+from genexp.utils import log_tensor_stats
 
 
 class FDCTrainerFlow(AMTrainerFlow):
@@ -25,7 +26,9 @@ class FDCTrainerFlow(AMTrainerFlow):
         self.base_base_model = copy.deepcopy(base_model)
         self.combined_score = lambda s, t: base_model.score_func(s, t) - self.beta * self.base_base_model.score_func(s, t)
         def grad_reward_fn(x):
-            return -self.gamma * self.combined_score(x, 1. - self.epsilon)
+            val = -self.gamma * self.combined_score(x, 1.0 - self.epsilon)
+            log_tensor_stats("grad_reward_fn output", val, "FlowDensityControl")
+            return val
 
         super().__init__(config.adjoint_matching, model, base_model, grad_reward_fn, None, device, verbose, sampler)
 

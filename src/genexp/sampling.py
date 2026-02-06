@@ -1,9 +1,13 @@
 import abc
-from dataclasses import dataclass
-import torchdiffeq
-import torch
-from .models import DiffusionModel, FlowModel, SDE, VPSDE
+import logging
 from typing import Sequence
+
+import torch
+import torchdiffeq
+
+from .models import SDE, VPSDE, DiffusionModel, FlowModel
+from .utils import AGGRESSIVE_LOGGING_ENABLED, log_tensor_stats
+
 
 class Solver(abc.ABC):
     def solve(self, x0, ts=None, steps=50, store_traj=False, device=None):
@@ -31,7 +35,7 @@ class Solver(abc.ABC):
 class ODE:
     def f(self, x, t):
         """Return the derivative of x at time t."""
-        raise NotImplemented
+        raise NotImplementedError
 
 
 class ODESolver(Solver):
@@ -199,6 +203,21 @@ class EulerMaruyamaSolver(Solver):
         score_t = self.model.score_func(xt, t)
         etat = beta_t * (kt * beta_t - beta_dot_t)
         xtph = xt + h * kt * xt + h * (st**2 / 2 + etat) * score_t + torch.sqrt(h) * st * et
+        
+        if AGGRESSIVE_LOGGING_ENABLED:
+            logging.info(f"[EulerMaruyamaSolver.step] t={t}, tph={tph}, h={h.item() if torch.is_tensor(h) else h}")
+            log_tensor_stats("xt", xt, "EulerMaruyamaSolver.step")
+            log_tensor_stats("alpha_t", alpha_t, "EulerMaruyamaSolver.step")
+            log_tensor_stats("beta_t", beta_t, "EulerMaruyamaSolver.step")
+            log_tensor_stats("alpha_dot_t", alpha_dot_t, "EulerMaruyamaSolver.step")
+            log_tensor_stats("beta_dot_t", beta_dot_t, "EulerMaruyamaSolver.step")
+            log_tensor_stats("kt", kt, "EulerMaruyamaSolver.step")
+            log_tensor_stats("st", st, "EulerMaruyamaSolver.step")
+            log_tensor_stats("et", et, "EulerMaruyamaSolver.step")
+            log_tensor_stats("score_t", score_t, "EulerMaruyamaSolver.step")
+            log_tensor_stats("etat", etat, "EulerMaruyamaSolver.step")
+            log_tensor_stats("xtph", xtph, "EulerMaruyamaSolver.step")
+            logging.info("=" * 80)
         return xtph
 
 

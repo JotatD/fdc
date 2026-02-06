@@ -1,8 +1,12 @@
-import os
 import logging
-import abc
 
 import torch
+
+from .utils import AGGRESSIVE_LOGGING_ENABLED, log_tensor_stats
+
+logger = logging.getLogger(__name__)
+
+
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +191,10 @@ class DiffusionModel(FlowModel):
         """
         eps_pred = self.forward(x, 1. - t)
         _, sigma = self.sde.get_alpha_sigma(1. - t)
+        
+        if AGGRESSIVE_LOGGING_ENABLED:
+            log_tensor_stats("DiffusionModel score_func eps_pred", eps_pred, "DiffusionModel")
+            log_tensor_stats("DiffusionModel score_func sigma", sigma, "DiffusionModel")
         return -eps_pred/sigma.to(eps_pred.device).to(eps_pred.dtype)
     
 

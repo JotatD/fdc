@@ -11,15 +11,20 @@ from scipy.special import gamma
 
 from ..models import DiffusionModel
 from ..sampling import Sampler
+from ..utils import AGGRESSIVE_LOGGING_ENABLED, log_tensor_stats
 from .adjoint_matching import AMTrainerFlow
 from .objective import ZDT5Torch
 
+EPS = 1e-6
+
 
 def sample_lambda_first_quadrant(shape=(1,)):
-    theta = (torch.pi / 2) * torch.rand(*shape)
+    theta = (torch.pi / 2) * (
+        torch.rand(*shape, dtype=torch.float32).clamp(EPS, 1 - EPS)
+    )
     return torch.stack([torch.sin(theta), torch.cos(theta)], axis=-1)
 
-LOG = True
+
 SAVE = False
 BREAKPOINT = False
 class ChebyshevTrainer(AMTrainerFlow):
@@ -51,7 +56,6 @@ class ChebyshevTrainer(AMTrainerFlow):
             div = self.divergence(x)
             total_grad = self.lmbda * cbsh - div
             logging.debug(f"[grad_reward_fn] Chebyshev grad norm: {torch.norm(cbsh).item():.6f}, Divergence norm: {torch.norm(div).item():.6f}, Total norm: {torch.norm(total_grad).item():.6f}")
-            print(f"[grad_reward_fn] Chebyshev grad norm: {torch.norm(cbsh).item():.6f}, Divergence norm: {torch.norm(div).item():.6f}, Total norm: {torch.norm(total_grad).item():.6f}")
             return total_grad
 
         self.lmbda = lmbda
@@ -126,10 +130,11 @@ class ChebyshevTrainer(AMTrainerFlow):
         with torch.no_grad():
             rel_error = torch.where(
                 actual_volumes > 1e-6,
-                torch.abs(hypervolume_values.detach() - actual_volumes) / actual_volumes,
                 torch.abs(hypervolume_values.detach() - actual_volumes)
+                / actual_volumes,
+                torch.abs(hypervolume_values.detach() - actual_volumes),
             )
-        
+
         if BREAKPOINT:
             breakpoint()
         # Compute gradients with respect to x_reshaped using autograd.grad
@@ -138,72 +143,30 @@ class ChebyshevTrainer(AMTrainerFlow):
         
         grads = x.grad
         
-        if LOG:
-            # Input diagnostics
+        if AGGRESSIVE_LOGGING_ENABLED:
             logging.info(f"[Chebyshev Gradient] Input x shape: {x.shape}, requires_grad: {x.requires_grad}")
-            logging.info(f"[Chebyshev Gradient] Input x norms - min: {x_norms.min().item():.6f}, max: {x_norms.max().item():.6f}, mean: {x_norms.mean().item():.6f}")
+            log_tensor_stats("x", x, "Chebyshev Gradient")
+            log_tensor_stats("x_norms", x_norms, "Chebyshev Gradient")
             logging.info(f"[Chebyshev Gradient] Input x norms means per group {x_norms.mean(dim=1).tolist()}")
-            if torch.isnan(x).any():
-                logging.error("[Chebyshev Gradient] NaN detected in input x!")
-                logging.error(f"[Chebyshev Gradient] NaN locations: {torch.isnan(x).sum().item()} out of {x.numel()} elements")
-            
-            # Rewards diagnostics
-            logging.info(f"[Chebyshev Gradient] Rewards shape: {rewards.shape}")
-            logging.info(f"[Chebyshev Gradient] Rewards stats - min: {rewards.min().item():.6f}, max: {rewards.max().item():.6f}, mean: {rewards.mean().item():.6f}")
-            if torch.isnan(rewards).any():
-                logging.error("[Chebyshev Gradient] NaN detected in rewards!")
-                logging.error(f"[Chebyshev Gradient] NaN locations in rewards: {torch.isnan(rewards).sum().item()} out of {rewards.numel()} elements")
-            
-            # Hypervolume diagnostics
+            log_tensor_stats("rewards", rewards, "Chebyshev Gradient")
             logging.info(f"[Chebyshev Gradient] Actual hypervolumes: {actual_volumes.tolist()}")
-            logging.info(f"[Chebyshev Gradient] Actual HV stats - min: {actual_volumes.min().item():.6f}, max: {actual_volumes.max().item():.6f}, mean: {actual_volumes.mean().item():.6f}")
-            
-            # Lambda diagnostics
-            logging.debug(f"[Chebyshev Gradient] Lambda shape: {lambda_.shape}, stats - min: {lambda_.min().item():.4f}, max: {lambda_.max().item():.4f}")
-            
-            # Intermediate computation diagnostics
-            logging.debug(f"[Chebyshev Gradient] diff_dot shape: {diff_dot.shape}, stats - min: {diff_dot.min().item():.6f}, max: {diff_dot.max().item():.6f}")
-            if torch.isnan(diff_dot).any():
-                logging.error("[Chebyshev Gradient] NaN detected in diff_dot!")
-                logging.error(f"[Chebyshev Gradient] NaN locations in diff_dot: {torch.isnan(diff_dot).sum().item()} out of {diff_dot.numel()} elements")
-            
-            logging.debug(f"[Chebyshev Gradient] s_lambda shape: {s_lambda.shape}, stats - min: {s_lambda.min().item():.6f}, max: {s_lambda.max().item():.6f}")
-            if torch.isnan(s_lambda).any():
-                logging.error("[Chebyshev Gradient] NaN detected in s_lambda!")
-                logging.error(f"[Chebyshev Gradient] NaN locations in s_lambda: {torch.isnan(s_lambda).sum().item()} out of {s_lambda.numel()} elements")
-            
-            logging.debug(f"[Chebyshev Gradient] hypervolume_estimates shape: {hypervolume_estimates.shape}, stats - min: {hypervolume_estimates.min().item():.6f}, max: {hypervolume_estimates.max().item():.6f}")
-            if torch.isnan(hypervolume_estimates).any():
-                logging.error("[Chebyshev Gradient] NaN detected in hypervolume_estimates!")
-                logging.error(f"[Chebyshev Gradient] NaN locations in hypervolume_estimates: {torch.isnan(hypervolume_estimates).sum().item()} out of {hypervolume_estimates.numel()} elements")
-            
-            # Final hypervolume diagnostics
+            log_tensor_stats("actual_volumes", actual_volumes, "Chebyshev Gradient")
+            log_tensor_stats("lambda_", lambda_, "Chebyshev Gradient")
+            log_tensor_stats("diff_dot", diff_dot, "Chebyshev Gradient")
+            log_tensor_stats("s_lambda", s_lambda, "Chebyshev Gradient")
+            log_tensor_stats("hypervolume_estimates", hypervolume_estimates, "Chebyshev Gradient")
             logging.info(f"[Chebyshev Gradient] Estimated hypervolumes: {hypervolume_values.tolist()}")
-            logging.info(f"[Chebyshev Gradient] Estimated HV stats - min: {hypervolume_values.min().item():.6f}, max: {hypervolume_values.max().item():.6f}, mean: {hypervolume_values.mean().item():.6f}")
-            if torch.isnan(hypervolume_values).any():
-                logging.error("[Chebyshev Gradient] NaN detected in final hypervolume_values!")
-                logging.error(f"[Chebyshev Gradient] NaN locations in hypervolume_values: {torch.isnan(hypervolume_values).sum().item()} out of {hypervolume_values.numel()} elements")
-            
-            # Error comparison
+            log_tensor_stats("hypervolume_values", hypervolume_values, "Chebyshev Gradient")
             logging.info(f"[Chebyshev Gradient] Relative errors: {rel_error.tolist()}")
-            logging.info(f"[Chebyshev Gradient] Mean relative error: {rel_error.mean().item():.6f}, Max relative error: {rel_error.max().item():.6f}")
-            
-            # Loss diagnostics
+            log_tensor_stats("rel_error", rel_error, "Chebyshev Gradient")
             logging.info(f"[Chebyshev Gradient] Total loss for gradient computation: {loss.item():.6f}")
-            if torch.isnan(loss).any():
-                logging.error("[Chebyshev Gradient] NaN detected in loss value!")
-            
-            # Gradient diagnostics
+            log_tensor_stats("loss", loss, "Chebyshev Gradient")
             logging.info(f"[Chebyshev Gradient] Gradient shape: {grads.shape}")
-            logging.info(f"[Chebyshev Gradient] Gradient stats - min: {grads.min().item():.6f}, max: {grads.max().item():.6f}, mean: {grads.mean().item():.6f}, norm: {torch.norm(grads).item():.6f}")
+            log_tensor_stats("grads", grads, "Chebyshev Gradient")
             if torch.isnan(grads).any():
-                logging.error("[Chebyshev Gradient] NaN detected in gradients!")
-                logging.error(f"[Chebyshev Gradient] NaN locations in grads: {torch.isnan(grads).sum().item()} out of {grads.numel()} elements")
-                
-                # Compute per-point gradient norms to see which points have NaN gradients
-                grad_norms = torch.norm(grads, dim=2)  # Shape: (batch_size, sampling_set_n)
-                logging.error(f"[Chebyshev Gradient] Gradient norms per point - min: {grad_norms.min().item():.6f}, max: {grad_norms.max().item():.6f}, mean: {grad_norms.mean().item():.6f}")
-            
+                grad_norms = torch.norm(grads, dim=1)
+                log_tensor_stats("grad_norms (per point)", grad_norms, "Chebyshev Gradient")
+
             logging.info("=" * 80)
 
         return grads.reshape(batch_size, -1)

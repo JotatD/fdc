@@ -1,8 +1,54 @@
+import argparse
+import logging
+import random
+
+import numpy as np
 import torch
 
-import argparse
-from omegaconf import OmegaConf
-import random
+# Global flag for aggressive logging
+AGGRESSIVE_LOGGING_ENABLED = True
+
+
+def set_aggressive_logging(enabled: bool):
+    """Set the global aggressive logging flag."""
+    global AGGRESSIVE_LOGGING_ENABLED
+    AGGRESSIVE_LOGGING_ENABLED = enabled
+    logging.info(f"Aggressive logging {'enabled' if enabled else 'disabled'}")
+
+
+def log_tensor_stats(name: str, tensor, context: str = ""):
+    """Log detailed statistics about a tensor for debugging.
+    
+    Args:
+        name: Name of the tensor
+        tensor: The tensor to log stats for
+        context: Optional context string to prefix log messages
+    """
+    
+    prefix = f"[{context}] " if context else ""
+    
+    if not torch.is_tensor(tensor):
+        logging.info(f"{prefix}{name} (non-tensor): {tensor}")
+        return
+    
+    logging.info(
+        f"{prefix}{name} shape={tuple(tensor.shape)}, "
+        f"min={tensor.min().item():.6f}, max={tensor.max().item():.6f}, "
+        f"mean={tensor.mean().item():.6f}, norm={torch.norm(tensor).item():.6f}"
+    )
+    
+    if torch.isnan(tensor).any():
+        logging.error(
+            f"{prefix}NaN detected in {name} "
+            f"({torch.isnan(tensor).sum().item()} / {tensor.numel()})"
+        )
+    
+    if torch.isinf(tensor).any():
+        logging.error(
+            f"{prefix}Inf detected in {name} "
+            f"({torch.isinf(tensor).sum().item()} / {tensor.numel()})"
+        )
+
 
 def seed_everything(seed: int):
     """Seed all random generators."""
@@ -305,7 +351,6 @@ def skilling_hutchinson_divergence(x, f, eps=None, dim=[1]):
     return torch.sum(grad_x_f * eps, dim=dim)    
   
 
-import numpy as np
 def discrete_entropy(counts):
     total = counts.sum()
     pxy = counts / total 
