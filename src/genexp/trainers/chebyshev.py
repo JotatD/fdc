@@ -143,6 +143,11 @@ class ChebyshevTrainer(AMTrainerFlow):
         
         grads = x.grad
         
+        max_grad_norm = 10.0
+        grad_norm = torch.norm(grads)
+        if grad_norm > max_grad_norm:
+            grads = grads * (max_grad_norm / grad_norm)
+        
         if AGGRESSIVE_LOGGING_ENABLED:
             logging.info(f"[Chebyshev Gradient] Input x shape: {x.shape}, requires_grad: {x.requires_grad}")
             log_tensor_stats("x", x, "Chebyshev Gradient")
@@ -169,7 +174,7 @@ class ChebyshevTrainer(AMTrainerFlow):
 
             logging.info("=" * 80)
 
-        return grads.reshape(batch_size, -1)
+        return -grads.reshape(batch_size, -1)
 
     def update_base_model(self):
         logging.info("[ChebyshevTrainer] Updating base model with fine model weights")
