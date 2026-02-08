@@ -7,6 +7,7 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from botorch.utils.multi_objective.hypervolume import Hypervolume
 from omegaconf import OmegaConf
 from pytorch_lightning import Trainer
 from torch import nn
@@ -17,6 +18,7 @@ from genexp.lighting_diffusion import LightningDiffusion
 from genexp.models import DiffusionModel
 from genexp.sampling import VPSDE, EulerMaruyamaSampler
 from genexp.trainers.chebyshev import ChebyshevTrainer
+from genexp.trainers.objective import ZDT5Torch
 from genexp.utils import seed_everything, set_aggressive_logging
 
 
@@ -122,6 +124,80 @@ def finetune_model(model, device, sampling_set_n, config_path="../configs/exampl
     torch.save(fdc_trainer.fine_model.model.state_dict(), f"models/multi_obj_finetuned_{sampling_set_n}.pth")
 
 
+def compute_hypervolumes(samples, ref_point, device):
+    """Compute hypervolumes for each sample.
+    
+    Args:
+        samples: Tensor of shape (num_samples, sampling_set_n, 2)
+        ref_point: Reference point for hypervolume computation
+        device: Device to run computation on
+    
+    Returns:
+        Array of hypervolumes for each sample
+    """
+    problem = ZDT5Torch(n=2, device=device)
+    num_samples = samples.shape[0]
+    
+    hypervolumes = []
+    for i in tqdm(range(num_samples), desc="Computing hypervolumes"):
+        # Evaluate objectives for this sample's points
+        sample_points = samples[i].to(device)  # (sampling_set_n, 2)
+        rewards = problem.evaluate(sample_points)  # (sampling_set_n, 2)
+        
+        # Compute hypervolume using botorch
+        hv = Hypervolume(ref_point.cpu()).compute(rewards.detach().cpu())
+        hypervolumes.append(hv)
+    
+    return np.array(hypervolumes)
+
+
+def plot_hypervolumes(args, sampling_set_n, samples_after, samples_fdc, device):
+    """Compute and plot hypervolume distributions.
+    
+    Args:
+        args: Command line arguments
+        sampling_set_n: Number of points in the sampling set
+        samples_after: Samples after pretraining (optional)
+        samples_fdc: Samples after finetuning (optional)
+        device: Device to run computation on
+    """
+    if not (args.sample_after_pretrain or args.sample_after_finetune):
+        return
+    
+    ref_point = torch.tensor([-11.0, -11.0])
+    
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+    
+    if samples_after is not None:
+        hv_after = compute_hypervolumes(samples_after, ref_point, device)
+        ax.hist(hv_after, bins=50, alpha=0.6, label='After Pretrain', density=True)
+    else:
+        #check if file exists and load it
+        pretrain_samples_path = f"models/samples_after_pretrain_{sampling_set_n}.pt"
+        if os.path.exists(pretrain_samples_path):
+            samples_after = torch.load(pretrain_samples_path)
+            hv_after = compute_hypervolumes(samples_after, ref_point, device)
+            ax.hist(hv_after, bins=50, alpha=0.6, label='After Pretrain', density=True)
+        
+    
+    if args.sample_after_finetune and samples_fdc is not None:
+        logging.info("Computing hypervolumes for finetuned samples...")
+        hv_fdc = compute_hypervolumes(samples_fdc, ref_point, device)
+        ax.hist(hv_fdc, bins=50, alpha=0.6, label='After Finetune', density=True)
+        logging.info(f"Finetune HV - Mean: {hv_fdc.mean():.4f}, Std: {hv_fdc.std():.4f}")
+    
+    ax.set_xlabel('Hypervolume')
+    ax.set_ylabel('Density')
+    ax.set_title('Hypervolume Distribution')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    fig.savefig(f"figs/hypervolume_distribution_{sampling_set_n}.png")
+    plt.close(fig)
+    logging.info(f"Hypervolume plot saved to figs/hypervolume_distribution_{sampling_set_n}.png")
+
+
 def plot_results(args, sampling_set_n, samples_before=None, samples_after=None, samples_fdc=None):
     """Plot the results based on available samples."""
     # Determine how many plots we need
@@ -129,7 +205,7 @@ def plot_results(args, sampling_set_n, samples_before=None, samples_after=None, 
     if args.sample_before_pretrain and samples_before is not None:
         num_plots += 1
     if args.sample_after_pretrain and samples_after is not None:
-        num_plots += 1
+        num_plots += sampling_set_n
     if args.sample_after_finetune and samples_fdc is not None:
         num_plots += sampling_set_n
 
@@ -155,9 +231,16 @@ def plot_results(args, sampling_set_n, samples_before=None, samples_after=None, 
 
     # Plot after pretrain
     if args.sample_after_pretrain and samples_after is not None:
-        ax[plot_idx].scatter(samples_after[:, 0], samples_after[:, 1], alpha=0.5)
-        ax[plot_idx].set_title("After pretrain")
-        plot_idx += 1
+        for i in range(sampling_set_n):
+            ax[plot_idx].scatter(
+                samples_after[:, i, 0].detach().cpu(),
+                samples_after[:, i, 1].detach().cpu(),
+                alpha=0.5,
+            )
+            ax[plot_idx].set_title(f"Point {i + 1} after pretrain")
+            ax[plot_idx].set_xlim(-15, 15)
+            ax[plot_idx].set_ylim(-15, 15)
+            plot_idx += 1
 
     # Plot each point after finetuning
     if args.sample_after_finetune and samples_fdc is not None:
@@ -168,6 +251,8 @@ def plot_results(args, sampling_set_n, samples_before=None, samples_after=None, 
                 alpha=0.5,
             )
             ax[plot_idx].set_title(f"Point {i + 1} after finetune")
+            ax[plot_idx].set_xlim(-15, 15)
+            ax[plot_idx].set_ylim(-15, 15)
             plot_idx += 1
 
     # Hide unused subplots
@@ -229,7 +314,11 @@ def main():
     )
 
     if args.sample_after_pretrain:
-        samples_after = generate_samples(model, device, sampling_set_n, batch_size, num_samples)
+        samples_after = generate_samples(model, device, sampling_set_n, batch_size, num_samples, reshape=True)
+        
+        # save the samples
+        torch.save(samples_after, f"models/samples_after_pretrain_{sampling_set_n}.pt")
+        logging.info(f"Saved samples after pretrain to models/samples_after_pretrain_{sampling_set_n}.pt")
 
     if args.finetune:
         finetune_model(model, device, sampling_set_n)
@@ -244,6 +333,9 @@ def main():
 
     # Plot results
     plot_results(args, sampling_set_n, samples_before, samples_after, samples_fdc)
+    
+    # Compute and plot hypervolumes
+    plot_hypervolumes(args, sampling_set_n, samples_after, samples_fdc, device)
 
 
 if __name__ == "__main__":
