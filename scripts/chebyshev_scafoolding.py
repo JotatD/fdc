@@ -95,7 +95,7 @@ if __name__ == "__main__":
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-    device = torch.device("mps")
+    device = torch.device("cpu")
     problem = ZDT5Torch(n=2, device=device)
     test_number = 2
     if test_number == 1:
