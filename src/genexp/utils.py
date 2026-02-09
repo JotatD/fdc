@@ -7,6 +7,49 @@ import torch
 
 # Global flag for aggressive logging
 AGGRESSIVE_LOGGING_ENABLED = True
+_WANDB_ENABLED = False
+_WANDB_MODULE = None
+
+
+def init_wandb(config, project_name="flow-density-control", **kwargs):
+    """Initialize wandb with the given config.
+    
+    Args:
+        config: Configuration dict to log
+        project_name: Name of the wandb project
+        **kwargs: Additional arguments to pass to wandb.init
+    
+    Returns:
+        wandb run object or None if wandb is not available
+    """
+    global _WANDB_ENABLED, _WANDB_MODULE
+    
+    try:
+        import wandb
+        _WANDB_MODULE = wandb
+        
+        run = wandb.init(project=project_name, config=config, **kwargs)
+        _WANDB_ENABLED = True
+        logging.info(f"Wandb initialized: {run.name}")
+        return run
+    except ImportError:
+        logging.warning("wandb not installed. Run: pip install wandb")
+        _WANDB_ENABLED = False
+        return None
+
+
+def log_to_wandb(metrics_dict, step=None, commit=True):
+    """Log metrics to wandb if enabled.
+    
+    Args:
+        metrics_dict: Dictionary of metrics to log
+        step: Optional step counter
+        commit: Whether to commit the log immediately
+    """
+    global _WANDB_ENABLED, _WANDB_MODULE
+    
+    if _WANDB_ENABLED and _WANDB_MODULE is not None:
+        _WANDB_MODULE.log(metrics_dict, step=step, commit=commit)
 
 
 def set_aggressive_logging(enabled: bool):
@@ -24,30 +67,62 @@ def log_tensor_stats(name: str, tensor, context: str = ""):
         tensor: The tensor to log stats for
         context: Optional context string to prefix log messages
     """
+    global AGGRESSIVE_LOGGING_ENABLED, _WANDB_ENABLED
+    
+    if not AGGRESSIVE_LOGGING_ENABLED:
+        return
     
     prefix = f"[{context}] " if context else ""
     
     if not torch.is_tensor(tensor):
         logging.info(f"{prefix}{name} (non-tensor): {tensor}")
+        if _WANDB_ENABLED:
+            wandb_key = f"{context}/{name}" if context else name
+            log_to_wandb({wandb_key: tensor}, commit=False)
         return
+    
+    stats = {
+        "min": tensor.min().item(),
+        "max": tensor.max().item(),
+        "mean": tensor.mean().item(),
+        "norm": torch.norm(tensor).item(),
+    }
     
     logging.info(
         f"{prefix}{name} shape={tuple(tensor.shape)}, "
-        f"min={tensor.min().item():.6f}, max={tensor.max().item():.6f}, "
-        f"mean={tensor.mean().item():.6f}, norm={torch.norm(tensor).item():.6f}"
+        f"min={stats['min']:.6f}, max={stats['max']:.6f}, "
+        f"mean={stats['mean']:.6f}, norm={stats['norm']:.6f}"
     )
     
+    # Log to wandb
+    if _WANDB_ENABLED:
+        wandb_key = f"{context}/{name}" if context else name
+        log_to_wandb({
+            f"{wandb_key}/min": stats['min'],
+            f"{wandb_key}/max": stats['max'],
+            f"{wandb_key}/mean": stats['mean'],
+            f"{wandb_key}/norm": stats['norm'],
+        }, commit=False)
+    
     if torch.isnan(tensor).any():
+        nan_count = torch.isnan(tensor).sum().item()
         logging.error(
             f"{prefix}NaN detected in {name} "
-            f"({torch.isnan(tensor).sum().item()} / {tensor.numel()})"
+            f"({nan_count} / {tensor.numel()})"
         )
+        if _WANDB_ENABLED:
+            wandb_key = f"{context}/{name}" if context else name
+            log_to_wandb({f"{wandb_key}/nan_count": nan_count}, commit=False)
     
     if torch.isinf(tensor).any():
+        inf_count = torch.isinf(tensor).sum().item()
         logging.error(
             f"{prefix}Inf detected in {name} "
-            f"({torch.isinf(tensor).sum().item()} / {tensor.numel()})"
+            f"({inf_count} / {tensor.numel()})"
         )
+        if _WANDB_ENABLED:
+            wandb_key = f"{context}/{name}" if context else name
+            log_to_wandb({f"{wandb_key}/inf_count": inf_count}, commit=False)
 
 
 def seed_everything(seed: int):
@@ -451,3 +526,59 @@ def recursive_to_device(module: torch.nn.Module, device: torch.device) -> None:
 
 
 
+def get_config_multiplicative(attrs, counter):
+    if counter < 0 or counter >= np.prod([len(v) for v in attrs.values()]):
+        raise ValueError(f"Config index {counter} is out of bounds for the given configuration space.")
+    
+    lengths = [len(v) for v in attrs.values()]
+    idcs = []
+    for i, cur_length in enumerate(lengths):
+        rest_basis = np.prod(lengths[i+1:]) if lengths[i+1:] else 1
+        remainder = counter % rest_basis
+        idx = (counter - remainder) // rest_basis
+        counter = remainder
+        
+        idcs.append(idx)
+        
+    result = {}
+    for i, key in enumerate(attrs.keys()):
+        print(i, key, attrs[key], idcs[i])
+        result[key] = attrs[key][idcs[i]]
+            
+    return result
+
+def get_config_additive(attrs, idx):
+    lengths = [len(v) for v in attrs.values()]
+    if len(set(lengths)) != 1:
+        if len(set(lengths)) == 2:
+            if 1 not in lengths:
+                raise ValueError("All values in dictionary must have the same length or length 1")
+        else:
+            raise ValueError("All values in dictionary must have the same length or length 1")
+    
+    result = {}
+    for key, values in attrs.items():
+        if len(values) == 1:
+            result[key] = values[0]
+        else:
+            result[key] = values[idx]
+    return result
+
+def get_config(exp_search: dict, adj_search: dict, idx: int, type='multiplicative'):
+    assert len(set({**exp_search, **adj_search})) == len(exp_search.keys()) + len(adj_search.keys()), "All keys must be unique"
+    total_dict = exp_search.copy()
+    total_dict.update(adj_search)
+
+    
+    if type == 'multiplicative':
+        config = get_config_multiplicative(total_dict, idx)
+    elif type == 'additive':
+        config = get_config_additive(total_dict, idx)
+    else:
+        raise ValueError(f"Invalid type: {type}")
+    
+    exp_config = {k: config[k] for k in exp_search.keys()}
+    adj_config = {k: config[k] for k in adj_search.keys()}
+    
+            
+    return exp_config, adj_config

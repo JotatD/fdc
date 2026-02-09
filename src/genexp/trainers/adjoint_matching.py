@@ -1,12 +1,12 @@
+from typing import Callable, List, Optional
+
 import numpy as np
-from omegaconf import OmegaConf
-
 import torch
-from torch.utils.data import Dataset, ConcatDataset
+from omegaconf import OmegaConf
+from torch.utils.data import ConcatDataset, Dataset
 
-from genexp.sampling import EulerMaruyamaSampler, Sampler, Sample
 from genexp.models import FlowModel
-from typing import List, Callable, Optional
+from genexp.sampling import EulerMaruyamaSampler, Sample, Sampler
 
 
 class LeanAdjointSolverFlow:
@@ -178,7 +178,6 @@ class AMTrainerFlow:
         ):
         # Config
         self.config = config
-        self.sampling_config = config.sampling
         self.device = device or torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.verbose = verbose
         self.max_nodes = config.get("max_nodes", 210)
@@ -192,6 +191,9 @@ class AMTrainerFlow:
         self.base_model = base_model
         self.fine_model.to(self.device)
         self.base_model.to(self.device)
+        
+        self.sampling_num_integration_steps = config.get("sampling_num_integration_steps", 40)
+        self.sampling_num_samples = config.get("sampling_num_samples", 100)
 
         # Reward (Gradient of the reward function(al))
         self.grad_reward_fn = grad_reward_fn
@@ -219,8 +221,8 @@ class AMTrainerFlow:
 
 
     def sample_trajectories(self):
-        N = self.sampling_config.num_samples
-        T = self.sampling_config.num_integration_steps + 1
+        N = self.sampling_num_samples
+        T = self.sampling_num_integration_steps + 1
         self.sampler.model = self.fine_model
         trajectories, ts = self.sampler.sample_trajectories(N=N, T=T)
         ts = ts.to(self.sampler.device)
@@ -238,7 +240,7 @@ class AMTrainerFlow:
 
         solver = LeanAdjointSolverFlow(self.base_model, self.grad_reward_fn, self.grad_f_k_fn)
 
-        iterations = self.sampling_config.num_samples // self.config.batch_size
+        iterations = self.sampling_num_samples // self.config.batch_size
         for i in range(iterations):
             with torch.no_grad():
                 trajectories, ts, sigmas = self.sample_trajectories()

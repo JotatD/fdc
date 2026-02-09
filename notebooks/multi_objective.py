@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from botorch.utils.multi_objective.hypervolume import Hypervolume
-from omegaconf import OmegaConf
 from pytorch_lightning import Trainer
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
@@ -19,7 +18,36 @@ from genexp.models import DiffusionModel
 from genexp.sampling import VPSDE, EulerMaruyamaSampler
 from genexp.trainers.chebyshev import ChebyshevTrainer
 from genexp.trainers.objective import ZDT5Torch
-from genexp.utils import seed_everything, set_aggressive_logging
+from genexp.utils import (
+    get_config,
+    init_wandb,
+    log_to_wandb,
+    seed_everything,
+    set_aggressive_logging,
+)
+
+
+class DotDict(dict):
+    """Dictionary that supports both dictionary and attribute access."""
+    
+    def __getattr__(self, key):
+        try:
+            value = self[key]
+            # Recursively convert nested dicts to DotDict
+            if isinstance(value, dict) and not isinstance(value, DotDict):
+                return DotDict(value)
+            return value
+        except KeyError:
+            raise AttributeError(f"'DotDict' object has no attribute '{key}'")
+    
+    def __setattr__(self, key, value):
+        self[key] = value
+    
+    def __delattr__(self, key):
+        try:
+            del self[key]
+        except KeyError:
+            raise AttributeError(f"'DotDict' object has no attribute '{key}'")
 
 
 def setup_logging():
@@ -96,13 +124,12 @@ def pretrain_model(model, sampling_set_n):
     torch.save(model.model.state_dict(), f"models/multi_obj_pretrained_{sampling_set_n}.pth")
 
 
-def finetune_model(model, device, sampling_set_n, config_path="../configs/example_fdc.yaml"):
+def finetune_model(model, device, sampling_set_n, config, args):
     """Fine-tune the model using flow density control."""
-    config = OmegaConf.load(config_path)
     sampler = EulerMaruyamaSampler(
         model.to(device), data_shape=(2 * sampling_set_n,), device=device
     )
-    seed_everything(config.seed)
+    seed_everything(config['seed'])
 
     logging.info("Next is the flow density control fine-tuning...")
     fdc_trainer = ChebyshevTrainer(
@@ -114,11 +141,35 @@ def finetune_model(model, device, sampling_set_n, config_path="../configs/exampl
         sampler=sampler,
         ref=torch.tensor([-11.0, -11.0]).to(device),
     )
+    
+    num_samples = config.get("num_samples", 10000)
+    batch_size = config.get("batch_size", 256)
+    ref_point = torch.tensor([-11.0, -11.0])
 
-    for k in tqdm(range(config.num_md_iterations)):
+    for k in tqdm(range(config.num_md_iterations), desc="Mirror Descent Iterations"):
         for i in range(config.adjoint_matching.num_iterations):
             am_dataset = fdc_trainer.generate_dataset()
             fdc_trainer.finetune(am_dataset, steps=config.adjoint_matching.finetune_steps)
+        
+        # Generate samples and compute hypervolumes after each MD iteration
+        samples = generate_samples(model, device, sampling_set_n, batch_size, num_samples, reshape=True)
+        
+        if args.use_wandb:
+            # Compute hypervolumes for this MD iteration
+            hypervolumes = compute_hypervolumes(samples, ref_point, device)
+            
+            # Log hypervolume statistics
+            log_to_wandb({
+                "md_iteration": k,
+                "hypervolume/mean": hypervolumes.mean(),
+                "hypervolume/std": hypervolumes.std(),
+                "hypervolume/min": hypervolumes.min(),
+                "hypervolume/max": hypervolumes.max(),
+                "hypervolume/median": np.median(hypervolumes),
+            }, step=k)
+            
+            logging.info(f"MD Iter {k}: HV Mean={hypervolumes.mean():.4f}, Std={hypervolumes.std():.4f}")
+        
         fdc_trainer.update_base_model()
 
     torch.save(fdc_trainer.fine_model.model.state_dict(), f"models/multi_obj_finetuned_{sampling_set_n}.pth")
@@ -276,12 +327,54 @@ def main():
     parser.add_argument("-sample-after-pretrain", action="store_true", help="Sample after pretraining")
     parser.add_argument("-finetune", action="store_true", help="Finetune the model")
     parser.add_argument("-sample-after-finetune", action="store_true", help="Sample after finetuning")
-    parser.add_argument("--aggressive-logging", action="store_true", help="Enable aggressive tensor logging for debugging")
+    parser.add_argument("-aggressive-logging", action="store_true", help="Enable aggressive tensor logging for debugging")
+    parser.add_argument("--index", type=int, default=0, help="Index for config exploration (if applicable)")
+    parser.add_argument("-use-wandb", action="store_true", help="Enable wandb logging")
 
     args = parser.parse_args()
+    
+    explore_chebyshev = {
+        "seed": [2],
+        "gamma_falloff": [0.0],
+        "gamma": [0.1],
+        "epsilon": [0.005],
+        "num_md_iterations": [5],  # number of outer (mirror descent) steps
+        "beta": [0.8],
+        "first_variation_norm_clipping": [1., 10., 100., np.inf],
+        "num_samples": [10000],
+        "gradient_flipping": [True, False],
+    }
+    
+    explore_adjoint_matching = {
+            "num_iterations": [50],  # how often the adjoint matching is run after the bandit step (if use_bandit is set to false this is the only optimization step)
+            "batch_size": [32],  # batch_size is both used for number samples - sampled per batch an then for updates
+            "clip_grad_norm": [0.4],  # float - if 0.0 no clipping is done
+            "clip_loss": [1e5],  # float - if 0.0 no clipping is done
+            "lr": [0.01],
+            "finetune_steps": [10],
+            "sampling_num_samples": [256],
+            "sampling_num_integration_steps": [40]
+            }
 
     # Set aggressive logging flag
     set_aggressive_logging(args.aggressive_logging)
+    
+        
+    exp_config, adj_config = get_config(explore_chebyshev, explore_adjoint_matching, args.index)
+    
+    # Convert to DotDict for both dictionary and attribute access
+    config = DotDict(exp_config)
+    config["adjoint_matching"] = DotDict(adj_config)
+    num_samples = config.get("num_samples", 10000)
+    batch_size = config.get("batch_size", 256)
+
+    # Initialize wandb if requested
+    if args.use_wandb:
+        wandb_config = {
+            "sampling_set_n": args.sampling_set_n,
+            **config
+        }
+        init_wandb(wandb_config, project_name="multi-objective-diffusion")
 
     logging.info("Starting multi-objective diffusion experiment...")
     logging.info(f"Arguments: {args}")
@@ -292,9 +385,6 @@ def main():
     device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
     sde = VPSDE(0.1, 12)
     model = DiffusionModel(network, sde).to(device)
-
-    batch_size = 256
-    num_samples = 10000
 
     # Initialize sample storage
     samples_before = None
@@ -321,7 +411,7 @@ def main():
         logging.info(f"Saved samples after pretrain to models/samples_after_pretrain_{sampling_set_n}.pt")
 
     if args.finetune:
-        finetune_model(model, device, sampling_set_n)
+        finetune_model(model, device, sampling_set_n, config, args)
 
     # Load finetuned model
     model.model.load_state_dict(

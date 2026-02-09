@@ -47,6 +47,8 @@ class ChebyshevTrainer(AMTrainerFlow):
         self.ref = ref
         self.k = k = 2  # the reward space
         self.ck = (np.pi ** (k / 2)) / (2**k * gamma(k / 2 + 1))
+        self.max_grad_norm = config.get("first_variation_norm_clipping", 10.0)
+        self.gradient_flipping = config.get("gradient_flipping", False)
 
         logging.info(f"[ChebyshevTrainer] Initialized with alpha_div={self.alpha_div}, lambda={self.lmbda}, k={k}, ck={self.ck:.6f}")
         logging.info(f"[ChebyshevTrainer] Reference point: {ref}")
@@ -61,7 +63,7 @@ class ChebyshevTrainer(AMTrainerFlow):
         self.lmbda = lmbda
 
         super().__init__(
-            config.adjoint_matching,
+            config['adjoint_matching'],
             model,
             base_model,
             grad_reward_fn,
@@ -143,10 +145,9 @@ class ChebyshevTrainer(AMTrainerFlow):
         
         grads = x.grad
         
-        max_grad_norm = 10.0
         grad_norm = torch.norm(grads)
-        if grad_norm > max_grad_norm:
-            grads = grads * (max_grad_norm / grad_norm)
+        if grad_norm > self.max_grad_norm:
+            grads = grads * (self.max_grad_norm / grad_norm)
         
         if AGGRESSIVE_LOGGING_ENABLED:
             logging.info(f"[Chebyshev Gradient] Input x shape: {x.shape}, requires_grad: {x.requires_grad}")
@@ -174,7 +175,10 @@ class ChebyshevTrainer(AMTrainerFlow):
 
             logging.info("=" * 80)
 
-        return -grads.reshape(batch_size, -1)
+        if self.gradient_flipping:
+            grads = -grads
+            
+        return grads.reshape(batch_size, -1)
 
     def update_base_model(self):
         logging.info("[ChebyshevTrainer] Updating base model with fine model weights")
